@@ -2495,6 +2495,7 @@ version = "0.0.0"
 dependencies = [
  "kontra-host",
  "kontra-plugin",
+ "midir",
  "moose",
  "moose-standalone",
 ]

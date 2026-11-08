@@ -54,6 +54,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(out, snapshot_plugin(&plugin))?;
         return Ok(());
     }
+    // CoreMIDI keeps a process's device list current through the run loop of the
+    // thread that first opened a MIDI client. Open one here, on the main thread whose
+    // run loop the window drives, before the standalone's MIDI thread (which has no
+    // run loop) opens its own; otherwise inputs that appear after launch, such as a
+    // keyboard plugged in or a virtual port, never show up or reconnect.
+    #[cfg(target_os = "macos")]
+    let _midi_device_updates = midir::MidiInput::new("KONTRA device updates").ok();
     moose_standalone::run::<kontra_plugin::Plugin>();
     Ok(())
 }
