@@ -2364,6 +2364,7 @@ name = "kontra-plugin"
 version = "3.0.0-dev"
 dependencies = [
  "clap-sys",
+ "crossbeam-queue",
  "dirs",
  "kontra-align",
  "kontra-host",

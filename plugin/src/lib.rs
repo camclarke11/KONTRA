@@ -16,6 +16,7 @@ mod look;
 #[cfg(test)]
 mod playtest;
 mod readout;
+mod song;
 #[cfg(test)]
 mod tests;
 
@@ -100,6 +101,8 @@ pub struct Shared {
     restored: AtomicU32,
     /// The "Add folder" dialog; dropping it closes an open one.
     folder: folder::Dialog,
+    /// A MIDI file playing into the rack, and its picker.
+    song: song::Songs,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -115,6 +118,8 @@ pub enum Request {
     Browse(kontra_ui::app::Action),
     /// A folder the player dropped, to scan for libraries.
     AddRoot(std::path::PathBuf),
+    /// A MIDI file the player dropped, to play.
+    Song(std::path::PathBuf),
 }
 
 impl Shared {
@@ -218,6 +223,8 @@ pub struct Dsp {
     rate: f64,
     until_tick: usize,
     latency: u32,
+    /// The MIDI file playing, if any ([`song`]).
+    song: Option<song::Playing>,
 }
 
 /// The control tick: carries out requests, frees what audio retired and
@@ -265,6 +272,7 @@ impl BackgroundTask for Tick {
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
+                Request::Song(path) => play_song(p, &path, &mut report),
             }
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
@@ -273,6 +281,14 @@ impl BackgroundTask for Tick {
         if let Some(path) = p.shared.folder.picked() {
             browser.add_root(path);
         }
+        if let Some(path) = p.shared.song.dialog.picked() {
+            play_song(p, &path, &mut report);
+        }
+        // The header's song clock moved, or a song started or ended.
+        if let Some(path) = p.shared.song.autoplay() {
+            play_song(p, &path, &mut report);
+        }
+        let song_moved = p.shared.song.tick();
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
@@ -282,11 +298,18 @@ impl BackgroundTask for Tick {
         }
         // What the requests did shows, whether or not the editor's copy
         // of the rack noticed (a script's answer to a click).
-        if lock(&p.shared.view).refresh(rack, browser, report) | changed {
+        if lock(&p.shared.view).refresh(rack, browser, report) | changed | song_moved {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
         }
+    }
+}
+
+/// Plays the MIDI file at `path`; why it cannot goes to the report.
+fn play_song(p: &KontraParams, path: &std::path::Path, report: &mut Vec<String>) {
+    if let Err(e) = p.shared.song.open(path) {
+        report.push(format!("{}: {e}", path.display()));
     }
 }
 
@@ -410,6 +433,13 @@ impl PluginLogic for Kontra {
             {
                 s.input.push((e.sample_offset, event));
             }
+        }
+        // A MIDI file the editor plays, alongside the host's events.
+        if p.shared
+            .song
+            .process(&mut s.song, s.rate, frames, &mut s.input)
+        {
+            song::sort_by_frame(&mut s.input);
         }
         // The master ramps from the last block's gain to this one's.
         let target = db_to_linear(p.volume.value());

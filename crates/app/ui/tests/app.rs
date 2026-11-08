@@ -119,6 +119,26 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
     );
 }
 
+/// "Play MIDI" asks for a file; while a song plays, the header shows it and
+/// its Stop stops it.
+#[test]
+fn the_header_plays_and_stops_a_midi_file() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    assert_eq!(click(&mut ui, &mut app, "song-play"), [Action::PlaySong]);
+    app.song = Some(app::Song {
+        name: "Clair de Lune.mid".into(),
+        position: 65.0,
+        length: 312.0,
+    });
+    settle(&mut ui, &mut app);
+    let scene = ui.scene().unwrap();
+    assert!(scene.surface("song-play").is_none());
+    assert!(scene.surface("song").is_some());
+    assert_eq!(click(&mut ui, &mut app, "song-stop"), [Action::StopSong]);
+}
+
 #[test]
 fn a_dragged_envelope_handle_sets_every_group() {
     let mut ui = kontra_ui::ui();

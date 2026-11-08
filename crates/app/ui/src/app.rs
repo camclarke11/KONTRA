@@ -60,6 +60,19 @@ pub struct App {
     /// A load the host has been asked for and not finished.
     // ponytail: one load shown at a time; a list if loads queue up.
     pub loading: Option<Loading>,
+    /// The MIDI file playing into the rack ([`Action::PlaySong`]), if any.
+    pub song: Option<Song>,
+}
+
+/// A MIDI file playing, as the header shows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Song {
+    /// Its file name.
+    pub name: String,
+    /// Where it is, in seconds.
+    pub position: f64,
+    /// How long it is, in seconds.
+    pub length: f64,
 }
 
 /// Where a load lands: a new part, or part `n` it replaces.
@@ -384,6 +397,10 @@ pub enum Action {
     Modulation(f64),
     Panic,
     MidiThru(bool),
+    /// Pick a MIDI file and play it into the rack.
+    PlaySong,
+    /// Stop the MIDI file playing.
+    StopSong,
     Star(usize, bool),
     AddFolder,
     /// New parts take the next free MIDI channel; their own output pair.
@@ -484,6 +501,39 @@ fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     .h(Len::Pct(100.))
 }
 
+/// "Play MIDI"; while a song plays, its name, its clock and "Stop".
+fn song_control(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
+    let Some(song) = &app.song else {
+        let play = button(ui, "song-play", "Play MIDI", false);
+        if play.changed {
+            out.push(Action::PlaySong);
+        }
+        return play
+            .el
+            .tip("Play a MIDI file into the rack, or drop one on the window");
+    };
+    let stop = button(ui, "song-stop", "Stop", true);
+    if stop.changed {
+        out.push(Action::StopSong);
+    }
+    let clock = format!("{} / {}", minutes(song.position), minutes(song.length));
+    row![
+        caption(song.name.clone()).lines(1).min_w(0).w(TEXT * 9.),
+        caption(clock).reserve("00:00 / 00:00"),
+        stop.el.tip("Stop the MIDI file"),
+    ]
+    .gap(TIGHT)
+    .align(Align::Center)
+    .shrink(0)
+    .id("song")
+}
+
+/// `seconds` as minutes and seconds: 2:05.
+fn minutes(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let side = icon_button(
         ui,
@@ -561,6 +611,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if keyboard.changed {
         app.view.keyboard_hidden = !app.view.keyboard_hidden;
     }
+    let song = song_control(ui, app, out);
     let thru = button(ui, "midi-thru", "MIDI Thru", app.midi_thru);
     if thru.changed {
         app.midi_thru = !app.midi_thru;
@@ -583,6 +634,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         kit::meter(app.level, TEXT * 4.),
         vrule().h(CONTROL * 0.6),
         keyboard.el,
+        song,
         thru.el.tip("Pass MIDI through to the host"),
         panic.el.tip("Stop every note"),
     ];

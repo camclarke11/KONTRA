@@ -66,6 +66,46 @@ fn block(params: &KontraParams, dsp: &mut Dsp, events: &[moose::prelude::Event])
         .collect()
 }
 
+/// A MIDI file dropped on the editor plays through the tick and the audio
+/// thread to its end, its clock moving as blocks pass; one that is not a
+/// MIDI file does not play.
+#[test]
+fn a_dropped_midi_file_plays_to_its_end() {
+    let empty = Saved {
+        version: kontra_host::state::VERSION,
+        parts: Vec::new(),
+    };
+    let (params, mut dsp) = activate(&empty.write());
+    let dir = std::env::temp_dir().join(format!("kontra-song-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scale.mid");
+    std::fs::write(&path, crate::song::tests::song()).unwrap();
+    params.shared.request(crate::Request::Song(path));
+    Tick.run(&params);
+    let (name, at, length) = params.shared.song.status().unwrap();
+    assert_eq!((name.as_str(), at), ("scale.mid", 0.0));
+    assert!((length - 3.0).abs() < 1e-9, "{length}");
+
+    let blocks = |s: f64| (s * RATE) as usize / BLOCK;
+    for _ in 0..blocks(1.0) {
+        block(&params, &mut dsp, &[]);
+    }
+    let (_, at, _) = params.shared.song.status().unwrap();
+    assert!((0.9..1.1).contains(&at), "{at}");
+    for _ in 0..blocks(2.5) {
+        block(&params, &mut dsp, &[]);
+    }
+    assert!(params.shared.song.status().is_none());
+    assert!(dsp.song.is_none());
+
+    let junk = dir.join("junk.mid");
+    std::fs::write(&junk, b"not a midi file").unwrap();
+    params.shared.request(crate::Request::Song(junk));
+    Tick.run(&params);
+    assert!(params.shared.song.status().is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 fn note(on: bool, key: u8) -> moose::prelude::Event {
     let body = if on {
         EventBody::NoteOn {

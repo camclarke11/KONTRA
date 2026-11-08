@@ -614,6 +614,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         crate::look::parts(&mut app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
+        app.song = (p.shared.song.status()).map(|(name, position, length)| app::Song {
+            name,
+            position,
+            length,
+        });
         let response = kontra_ui::app::view(ui, &mut app);
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
@@ -644,6 +649,19 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 let from = app.folders.first().map(PathBuf::from);
                 p.shared.folder.ask(from);
                 continue;
+            }
+            match action {
+                Action::PlaySong => {
+                    p.shared.song.dialog.ask(p.shared.song.folder());
+                    continue;
+                }
+                Action::StopSong => {
+                    p.shared.song.stop();
+                    continue;
+                }
+                // Panic stops a song too, then ends every note as before.
+                Action::Panic => p.shared.song.stop(),
+                _ => {}
             }
             if let Some(event) = played(&action) {
                 if let Some(player) = lock(&p.shared.player).as_ref() {
@@ -700,7 +718,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     .on_files(move |_, _, paths, dropped| {
         let instruments: Vec<_> = paths.iter().filter(|p| is_instrument(p)).cloned().collect();
         let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
+        // One song plays at a time: the first dropped.
+        let song = paths.iter().find(|p| is_song(p)).cloned();
         if dropped {
+            if let Some(path) = &song {
+                dropping.shared.request(Request::Song(path.clone()));
+            }
             for path in &folders {
                 dropping.shared.request(Request::AddRoot(path.clone()));
             }
@@ -711,7 +734,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 });
             }
         }
-        !instruments.is_empty() || !folders.is_empty()
+        !instruments.is_empty() || !folders.is_empty() || song.is_some()
     })
     .changed(move || {
         // Only events draw: a change the tick or the view marked, or a
@@ -758,6 +781,15 @@ fn played(action: &Action) -> Option<Event> {
         Action::Modulation(x) => Event::midi1(0xB0, 1, (x.clamp(0.0, 1.0) * 127.0).round() as u8),
         _ => return None,
     })
+}
+
+/// Whether a dropped file is a MIDI file to play.
+fn is_song(path: &std::path::Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(ext.as_deref(), Some("mid" | "midi"))
 }
 
 /// Whether a dropped file is an instrument the rack loads: a Kontakt

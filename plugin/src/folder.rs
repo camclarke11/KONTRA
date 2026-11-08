@@ -1,6 +1,6 @@
-//! The editor's "Add folder": the system's folder picker, off the editor's
-//! thread, so no frame waits on it. [`crate::Tick`] takes what was picked
-//! and scans it.
+//! The editor's "Add folder" and "Play MIDI": the system's folder or file
+//! picker, off the editor's thread, so no frame waits on it. [`crate::Tick`]
+//! takes what was picked: it scans a folder, plays a MIDI file.
 //!
 //! On Linux the picker is the desktop portal (v2's `mui-native-dialog`):
 //! dropping [`Dialog`] at plugin teardown cancels an open picker and joins
@@ -21,11 +21,32 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use crate::lock;
 
-const TITLE: &str = "A folder of libraries";
+/// What a [`Dialog`] picks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pick {
+    /// A folder of libraries, for the browser.
+    #[default]
+    Folder,
+    /// A Standard MIDI File to play ([`crate::song`]).
+    Song,
+}
 
-/// The "Add folder" picker while it is open.
+impl Pick {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Folder => "A folder of libraries",
+            Self::Song => "A MIDI file to play",
+        }
+    }
+}
+
+/// The extensions a MIDI file picker offers.
+const SONG_EXTENSIONS: [&str; 2] = ["mid", "midi"];
+
+/// A picker while it is open.
 #[derive(Default)]
 pub struct Dialog {
+    pick: Pick,
     #[cfg(target_os = "linux")]
     service: mui_native_dialog::DialogService,
     #[cfg(target_os = "linux")]
@@ -37,6 +58,14 @@ pub struct Dialog {
 }
 
 impl Dialog {
+    /// A picker for `pick`.
+    pub fn new(pick: Pick) -> Self {
+        Self {
+            pick,
+            ..Self::default()
+        }
+    }
+
     /// The host's Win32 window the editor opened in, or `None` as it closes.
     pub fn set_owner(&self, hwnd: Option<isize>) {
         self.owner.store(hwnd.unwrap_or(0), Ordering::Release);
@@ -54,13 +83,23 @@ impl Dialog {
 
     #[cfg(target_os = "linux")]
     fn open(&self, from: Option<PathBuf>) -> Option<mui_native_dialog::DialogJob> {
-        use mui_native_dialog::{DialogKind, DialogRequest};
+        use mui_native_dialog::{DialogFilter, DialogKind, DialogRequest};
+        let (kind, filters) = match self.pick {
+            Pick::Folder => (DialogKind::PickFolder { multiple: false }, Vec::new()),
+            Pick::Song => (
+                DialogKind::OpenFile { multiple: false },
+                vec![DialogFilter {
+                    name: "MIDI file".into(),
+                    extensions: SONG_EXTENSIONS.map(String::from).to_vec(),
+                }],
+            ),
+        };
         let request = DialogRequest {
             parent: None,
-            title: TITLE.into(),
-            kind: DialogKind::PickFolder { multiple: false },
+            title: self.pick.title().into(),
+            kind,
             directory: from,
-            filters: Vec::new(),
+            filters,
         };
         self.service.spawn(request).ok()
     }
@@ -68,22 +107,26 @@ impl Dialog {
     #[cfg(not(target_os = "linux"))]
     fn open(&self, from: Option<PathBuf>) -> Option<std::thread::JoinHandle<Option<PathBuf>>> {
         let owner = self.owner.load(Ordering::Acquire);
+        let pick = self.pick;
         std::thread::Builder::new()
             .name("kontra-folder-dialog".into())
             .spawn(move || {
-                let mut d = rfd::FileDialog::new().set_title(TITLE);
+                let mut d = rfd::FileDialog::new().set_title(pick.title());
                 if let Some(from) = from {
                     d = d.set_directory(from);
                 }
                 if cfg!(windows) && owner != 0 {
                     d = d.set_parent(&moose::mui::ParentWindow::win32(owner));
                 }
-                d.pick_folder()
+                match pick {
+                    Pick::Folder => d.pick_folder(),
+                    Pick::Song => d.add_filter("MIDI file", &SONG_EXTENSIONS).pick_file(),
+                }
             })
             .ok()
     }
 
-    /// The folder picked, once the picker closed.
+    /// What was picked, once the picker closed.
     #[cfg(target_os = "linux")]
     pub fn picked(&self) -> Option<PathBuf> {
         let mut job = lock(&self.job);
@@ -97,7 +140,7 @@ impl Dialog {
         result?.ok()??.into_iter().next()
     }
 
-    /// The folder picked, once the picker closed.
+    /// What was picked, once the picker closed.
     #[cfg(not(target_os = "linux"))]
     pub fn picked(&self) -> Option<PathBuf> {
         let mut job = lock(&self.job);
