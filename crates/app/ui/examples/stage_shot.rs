@@ -1,5 +1,5 @@
-//! The Stage and the song transport headless, drawn to PNG: the header's
-//! compact transport and its menu, then the Stage with its transport
+//! The Stage and the song transport headless, drawn to PNG: the keyboard
+//! bar's transport and its menu, then the Stage with its transport
 //! showing, its title card, a loop marked, and the transport hidden after
 //! the pointer rests. Saves `<out>/stage-*.png` and prints one JSON line
 //! per shot. The song is song_shot's: left-hand chords, right-hand runs.
@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok_or("usage: stage_shot <out dir>")?,
     );
     std::fs::create_dir_all(&out)?;
-    // The header's compact transport, and its menu.
+    // The keyboard bar's transport, and its menu.
     for size in [(1180u16, 780u16), (900, 640)] {
         let mut ui = kontra_ui::ui();
         let mut app = editor();

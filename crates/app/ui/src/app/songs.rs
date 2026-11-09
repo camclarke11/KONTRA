@@ -87,7 +87,7 @@ impl Default for Touch {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Played {
     pub path: PathBuf,
-    /// Its file name, as the header shows it.
+    /// Its file name, as the keyboard bar shows it.
     pub name: String,
     /// The touch-ups it needs, and those it got.
     pub needs: Touch,

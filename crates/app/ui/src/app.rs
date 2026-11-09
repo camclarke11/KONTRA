@@ -91,7 +91,7 @@ impl App {
     }
 }
 
-/// A MIDI file playing, as the header shows it.
+/// A MIDI file playing, as the keyboard bar shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Song {
     /// Its file name.
