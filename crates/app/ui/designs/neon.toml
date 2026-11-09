@@ -1,0 +1,60 @@
+# Neon: saturated colour on black, hard light, bright sparks.
+
+[meta]
+name = "Neon"
+description = "Saturated colour on black"
+
+[background]
+top = "#05030a"
+bottom = "#000000"
+aurora = ["#ff2d95", "#00e5ff", "#7b2dff"]
+aurora_strength = 0.12
+drift = 0.035
+vignette = 0.6
+lanes = "#ff4dd2"
+lane_strength = 0.06
+sharp_lanes = 0.0
+
+[notes]
+palette = ["#ff2d95", "#00e5ff", "#b4ff2d", "#9b5cff", "#ff5cf4", "#2dffb4"]
+velocity_brightness = 0.3
+velocity_width = 0.1
+sharp_shade = 0.86
+width = 0.8
+roundness = 0.2
+shading = "none"
+rim = "#ffffff"
+rim_strength = 0.75
+gloss = 0.0
+active_boost = 0.16
+
+[glow]
+strength = 1.0
+radius = 3.0
+flash = 1.6
+white_hot = 0.75
+bloom = 0.5
+
+[beams]
+strength = 0.55
+height = 0.75
+
+[strike]
+color = "#ffffff"
+strength = 0.8
+
+[particles]
+hit = 14.0
+hold = 3.0
+lifetime = 0.8
+speed = 5.0
+spread = 60.0
+gravity = -6.0
+drag = 2.0
+size = 0.06
+white_hot = 0.7
+strength = 1.0
+
+[pedal]
+color = "#00e5ff"
+strength = 0.6

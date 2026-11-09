@@ -1,0 +1,85 @@
+# Midnight: cool light on a night-blue field. KONTRA's default Design.
+#
+# Every setting is written out here, so this file is also the reference
+# for writing your own: a Design lists only what it changes from this.
+# Lengths are in key widths or shares of the view's height, never pixels,
+# so a Design looks the same in the editor and full screen.
+# The format follows piano-viz's Designs (MIT OR Apache-2.0).
+
+[meta]
+name = "Midnight"
+description = "Cool light on a night-blue field"
+
+# The field the notes fall through.
+[background]
+top = "#0b1022"              # at the top of the view
+bottom = "#050710"           # down at the keys
+aurora = ["#2f5bff", "#14b8a6"]  # soft light drifting across; [] for none
+aurora_strength = 0.16       # 0..1
+drift = 0.02                 # turns a second of the song: still when it is
+vignette = 0.45              # 0..1, how much the edges darken
+lanes = "#c8d6ff"            # the line at each octave's C
+lane_strength = 0.07         # 0..1; 0 for none
+sharp_lanes = 0.012          # shade over the sharps' lanes, 0..1
+
+# The notes' bars.
+[notes]
+# One colour a voice (a track and channel), over again past the last.
+palette = ["#5b9bff", "#2fd3ae", "#b388ff", "#2ec4f0", "#f06fc4", "#6cd66a"]
+hands = true                 # one voice (most piano files): colour by hand
+velocity_brightness = 0.45   # 0..1, how much lighter a loud note is
+velocity_width = 0.14        # 0..0.5, the share of width a soft note gives up
+sharp_shade = 0.82           # a sharp's bar is darker by this factor
+width = 0.84                 # a loud note's bar, as a share of its key
+roundness = 0.32             # corner radius as a share of the width; 0.5 is round
+shading = "across"           # none | along | across
+shading_amount = 0.32        # 0..1
+rim = "#ffffff"              # the bar's lit edge
+rim_strength = 0.3           # 0..1
+gloss = 0.16                 # a glint down the left side, 0..1
+active_boost = 0.1           # lighter while sounding, 0..0.5
+
+# The light where a note meets the keys; beams, bloom and sparks too.
+[glow]
+strength = 0.85              # 0..1
+radius = 2.4                 # the halo's radius, in key widths
+flash = 1.0                  # how much it flares as the note strikes, 0..3
+white_hot = 0.6              # how white its heart burns at the strike, 0..1
+bloom = 0.45                 # light around a sounding bar, 0..1
+blend = "screen"             # how all light lands: screen | normal | multiply
+
+# Light rising from a key while it sounds.
+[beams]
+strength = 0.4               # 0..1
+height = 0.6                 # a share of the view's height
+
+# The line the notes strike, along the top of the keys.
+[strike]
+color = "#9ec0ff"
+strength = 0.55              # 0..1
+
+# Sparks thrown up by a struck key, embers rising from a held one.
+# Lengths in key widths, times in seconds; the same at every frame rate.
+[particles]
+hit = 10.0                   # sparks a full-velocity strike throws
+hold = 5.0                   # embers a second while a note is held
+lifetime = 1.1
+lifetime_variance = 0.45     # the share of its life a particle may lose
+speed = 5.0                  # key widths a second, up
+speed_variance = 0.6
+spread = 38.0                # degrees either side of straight up
+gravity = -2.4               # key widths a second squared; negative falls
+drag = 1.1                   # how quickly the air slows it, per second
+size = 0.1                   # radius, in key widths
+size_variance = 0.5
+turbulence = 0.5             # how far it wanders, key widths a second
+white_hot = 0.55             # how white it is when new, 0..1
+strength = 0.9               # 0..1; 0 for none
+source = "note"              # note | fixed
+color = "#d6e4ff"            # used by fixed
+
+# The sustain pedal's lane down the left edge.
+[pedal]
+color = "#8fb0ff"
+strength = 0.75              # 0..1; 0 hides it
+width = 0.9                  # in key widths

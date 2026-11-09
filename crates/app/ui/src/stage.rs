@@ -282,13 +282,15 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let bed = (size.height * 0.17).clamp(TEXT * 6., TEXT * 14.);
     let range =
         (song.notes.keys()).map_or((24, 107), |keys| waterfall::fit(keys, waterfall::OCTAVES));
+    // The falling notes and lit keys in the Design the keyboard bar chose.
+    let look = crate::design::named(&app.view.design);
     // Each part's keys tinted, as the keyboard strip draws them.
     let spans = (app.parts.iter().enumerate())
         .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
         .collect();
     let keys = Keys {
         range,
-        lit: song.notes.lit(song.position),
+        lit: song.notes.lit_in(song.position, &look),
         held: app.view.playing.into_iter().collect(),
         spans,
         ..Keys::default()
@@ -300,11 +302,12 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .into_iter()
             .map(|(n, on)| Action::Note(n, on)),
     );
-    let lane = waterfall::waterfall(
+    let lane = waterfall::waterfall_in(
         &song.notes,
         song.position,
         range,
         (size.height - bed).max(0.),
+        look,
     )
     .id("stage-falling");
     let mut layers = vec![

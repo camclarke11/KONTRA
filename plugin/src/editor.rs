@@ -603,6 +603,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     let keys = Arc::new(crate::stage::Keys::default());
     let screen = Arc::new(crate::stage::Screen::default());
     let (keyed, keying, screened) = (Arc::clone(&keys), Arc::clone(&keys), Arc::clone(&screen));
+    // The falling notes' Designs: the user's own beside those that ship,
+    // read as the editor opens (tests keep nothing on disk).
+    if let Some(config) = dirs::config_dir().filter(|_| !cfg!(test)) {
+        let _ = kontra_ui::design::load(&config.join("kontra-v3").join("designs"));
+    }
     // While the keyboard follows a song, every display refresh draws.
     let following = Arc::new(AtomicBool::new(false));
     let follow = Arc::clone(&following);

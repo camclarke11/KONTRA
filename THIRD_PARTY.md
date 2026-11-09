@@ -200,13 +200,38 @@ MIT/Apache-2.0 licensing; this review has not independently established
 the authorship and redistribution rights of each audio recording.
 Preserve their upstream provenance and verify it for source redistribution.
 
-## Falling notes: MIDIVisualizer and Magenta.js
+## Falling notes: piano-viz, MIDIVisualizer and Magenta.js
 
 `crates/app/ui/src/waterfall.rs` (a playing song's notes falling onto the
-keyboard) follows the look of two permissively licensed visualizers,
-reviewed on 2026-11-09. It is a Rust port of their drawing approach and
+keyboard), `crates/app/ui/src/sparks.rs` (its particles),
+`crates/app/ui/src/design.rs` and `crates/app/ui/designs/*.toml` (its
+Designs) follow three permissively licensed visualizers, reviewed on
+2026-11-09. They are Rust ports of their drawing approach, formulas and
 parameters onto KONTRA's own keybed geometry and vello canvas; no source
-file was copied.
+file was copied whole.
+
+- [piano-viz](https://github.com/kyan0s-git/piano-viz) by kyan0s,
+  MIT OR Apache-2.0 (used here under MIT; its notice is below), at commit
+  `82f4c6715021c8444820bd6c03382020e4d82a33`. Read:
+  `crates/pv-render/src/shaders/particles.wgsl`, `common.wgsl`,
+  `keyboard.wgsl`, `notes.wgsl`, `background.wgsl`, `composite.wgsl`,
+  `crates/pv-render/src/frame.rs`, `crates/pv-design/src/lib.rs`,
+  `color.rs`, `schema.rs` and `designs/*.toml`. Ported to Rust in
+  `sparks.rs`: stateless particles, each a closed-form function of its
+  note, its number and the song's time (the PCG hash and its stream of
+  numbers, the drag-and-gravity flight `ballistic`, a burst on the strike
+  and embers born at a steady rate while a key is held, lifetime variance,
+  the shrink and fade-out curves, the drift that grows with age, the
+  white-hot start). Ported in `waterfall.rs`: a key's light fading for
+  0.35 s after its note ends (`exp(-12 t)`), a held note beating a fading
+  one and the latest struck winning (`key_states`); a strike flash that
+  dies away exponentially; the strike line drawn as a core with a halo.
+  Ported in `design.rs`: Designs as TOML with sections, a file listing
+  only what it changes, `#rrggbb[aa]` colours, unknown settings found by a
+  round trip through the struct and reported as warnings, out-of-range
+  values clamped with a warning; notes shaded none, along or across, a
+  velocity brightness and a sharp's shade. Not used: its WGSL, its
+  renderer, bloom post-process, camera, export or designs' values.
 
 - [MIDIVisualizer](https://github.com/kosua20/MIDIVisualizer) by Simon
   Rodriguez, MIT, at commit `1c942137679bc1846fd278d1e57ff91c71e94b72`.
@@ -223,8 +248,32 @@ file was copied.
   `music/src/core/visualizer.ts` (`WaterfallSVGVisualizer`). Used: the idea
   that a louder note is drawn stronger (it raises opacity; KONTRA raises
   lightness and chroma) and that a sounding note is drawn brighter.
-- [Neothesia](https://github.com/PolyMeilex/Neothesia) is GPL-3.0; only
-  its licence was checked, and none of its code was read or used.
+- [Neothesia](https://github.com/PolyMeilex/Neothesia) and Orfeo are
+  GPL-3.0, and
+  [notefall](https://notefall.app) has its own licence: they are named
+  only as visual inspiration. None of their code was read or used.
+
+piano-viz's notice (its MIT licence):
+
+Copyright (c) 2026 kyan0s
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 MIDIVisualizer's notice:
 

@@ -35,6 +35,7 @@ pub fn saved(app: &App, slots: &[usize]) -> SavedView {
         browser_hidden: v.browser_hidden,
         keyboard_hidden: v.keyboard_hidden,
         notes_hidden: v.notes_hidden,
+        design: v.design.clone(),
         keys_hidden: v.keys_hidden,
         mixer_wide: v.mixer_wide,
         octave: v.octave,
@@ -64,6 +65,7 @@ pub fn apply(app: &mut App, s: &SavedView) {
         browser_hidden: s.browser_hidden,
         keyboard_hidden: s.keyboard_hidden,
         notes_hidden: s.notes_hidden,
+        design: s.design.clone(),
         keys_hidden: s.keys_hidden,
         mixer_wide: s.mixer_wide,
         octave: s.octave,
@@ -103,6 +105,7 @@ mod tests {
         app.view.tab = Tab::Mixer;
         app.view.browser_hidden = true;
         app.view.notes_hidden = true;
+        app.view.design = "Ivory".into();
         app.view.octave = -1;
         app.view.scale = 2;
         app.view.split = 0.3;
@@ -122,6 +125,7 @@ mod tests {
         );
         assert_eq!((again.view.octave, again.view.scale), (-1, 2));
         assert!(again.view.notes_hidden, "the song's notes stay hidden");
+        assert_eq!(again.view.design, "Ivory", "and keep their look");
         assert!((again.view.split - 0.3).abs() < 1e-6, "the browser's split");
         assert_eq!(again.view.face_look, FaceLook::Vector);
         let mut waiting = saved.parts.clone();

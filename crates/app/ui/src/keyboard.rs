@@ -179,7 +179,12 @@ pub fn keyboard(
                 (.., Some(c)) => c.with_lightness(0.68).scale_chroma(0.25),
                 _ => grey,
             };
-            draw.push(Draw::fill(rect(x + 0.5, top, w - 1., h), Fill::from(face)));
+            // A key a song sounds is lit from where its note strikes it.
+            let fill = match lit(n) {
+                Some(c) if !held(n) => crate::waterfall::lit_key(c, false),
+                _ => Fill::from(face),
+            };
+            draw.push(Draw::fill(rect(x + 0.5, top, w - 1., h), fill));
         }
         for &(n, x, w) in all.iter().filter(|k| black(k.0)) {
             let grey = Color::oklch(0.2, 0., 0.);
@@ -191,7 +196,11 @@ pub fn keyboard(
                 (.., Some(c)) => c.with_lightness(0.22).scale_chroma(0.25),
                 _ => grey,
             };
-            draw.push(Draw::fill(rect(x, top, w, h * 0.62), Fill::from(face)));
+            let fill = match lit(n) {
+                Some(c) if !held(n) => crate::waterfall::lit_key(c, true),
+                _ => Fill::from(face),
+            };
+            draw.push(Draw::fill(rect(x, top, w, h * 0.62), fill));
         }
         draw
     })
