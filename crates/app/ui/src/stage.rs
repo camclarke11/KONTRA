@@ -259,7 +259,8 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     // The transport shows while the pointer moves, rests on it, drags a
     // seek bar, or the song waits; else it hides, a timed wake-up away.
     let rested = now - stage.moved.unwrap_or(now);
-    let held = t.paused || t.ended || stage.scrub.is_some() || on_bar;
+    // A menu of the transport's open holds it too.
+    let held = t.paused || t.ended || stage.scrub.is_some() || on_bar || app.view.menu.is_some();
     if !held && rested < HIDE {
         ui.repaint_in(HIDE - rested + 0.02);
     }
@@ -316,8 +317,20 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     })
     .h((size.height - bed).max(0.))
     .id("stage-falling");
+    let keybed = keybed.el.grow(0).w(Len::Pct(100.));
+    // Practising, the keys to press marked over the notes and the keys,
+    // as the keyboard strip marks them.
+    let (lane, keybed) = if app.practice.marks() {
+        let tall = (size.height - bed).max(0.);
+        (
+            stack![lane, crate::practice::lane(&app.practice, range, tall)].w(Len::Pct(100.)),
+            stack![keybed, crate::practice::keys(&app.practice, range, bed)].w(Len::Pct(100.)),
+        )
+    } else {
+        (lane, keybed)
+    };
     let mut layers = vec![
-        col![lane, keybed.el.grow(0).w(Len::Pct(100.))]
+        col![lane, keybed]
             .w(Len::Pct(100.))
             .h(Len::Pct(100.))
             .fill(Role::Field),
@@ -421,7 +434,13 @@ fn bar(ui: &mut Ui, app: &mut App, song: &Song, out: &mut Vec<Action>) -> El {
     .align(Align::Center)
     .w(Len::Pct(100.));
     let play = play_button(ui, "stage-play", t, out);
-    let mut controls = vec![play, vrule().h(CONTROL * 0.6)];
+    // Practice, as the keyboard strip offers it ([`crate::practice`]).
+    let practice = crate::practice::control(ui, &mut app.view.menu, &app.practice);
+    if let Some(hands) = practice.changed {
+        app.practice.hands = hands;
+        out.push(Action::Practice(hands));
+    }
+    let mut controls = vec![play, practice.el, vrule().h(CONTROL * 0.6)];
     for (n, group) in settings(ui, "stage", song, labels, out)
         .into_iter()
         .enumerate()

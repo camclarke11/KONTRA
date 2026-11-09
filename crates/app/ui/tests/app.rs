@@ -987,6 +987,34 @@ fn the_stage_fills_the_window_and_opens_and_closes_by_its_keys() {
     assert!(!app.view.stage.open && !on_screen(&ui, "stage"));
 }
 
+/// Practice works on the Stage as in the editor: its transport picks the
+/// hands, and the keys to press are marked over the notes and the keys.
+#[test]
+fn the_stage_practises_as_the_editor_does() {
+    use kontra_ui::practice::{Hands, Practice};
+    let mut ui = kontra_ui::ui();
+    let mut app = loaded();
+    song_mut(&mut app).transport.paused = true;
+    let mut out = Vec::new();
+    stage::shortcut(&mut app, Shortcut::Stage, &mut out);
+    settle(&mut ui, &mut app);
+    assert!(!on_screen(&ui, "practice-lane"), "not practising");
+    click(&mut ui, &mut app, "practice");
+    assert_eq!(
+        click(&mut ui, &mut app, "practice-1"),
+        [Action::Practice(Hands::Right)]
+    );
+    app.practice = Practice {
+        hands: Hands::Right,
+        waiting: true,
+        want: vec![60],
+        struck: Vec::new(),
+        wrong: Vec::new(),
+    };
+    settle(&mut ui, &mut app);
+    assert!(on_screen(&ui, "stage") && on_screen(&ui, "practice-lane"));
+}
+
 /// The transport hides two seconds after the pointer last moved, woken by
 /// a timer rather than drawing every frame, comes back when it moves, and
 /// stays while the song is paused. The title card shows as a take starts.
