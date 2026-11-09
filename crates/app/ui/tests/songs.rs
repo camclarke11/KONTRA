@@ -268,7 +268,7 @@ fn the_touch_ups_switch_and_say_what_they_did_to_the_song_playing() {
     );
     assert_eq!(
         text(&ui, "touch-status").as_deref(),
-        Some("This song got auto-pedal, humanise")
+        Some("This song: auto-pedal, humanise")
     );
     // Another song, not read by the tab: its keys alone, which let go.
     app.song.as_mut().unwrap().name = "other.mid".into();

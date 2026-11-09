@@ -16,17 +16,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         out.push(Action::Load { library, preset });
     }
     if app.parts.is_empty() {
-        return col![
-            spacer(),
-            title("Pick an instrument"),
-            caption("Choose one in the browser and it plays here.").fill(secondary()),
-            spacer(),
-        ]
-        .gap(SPACE)
-        .align(Align::Center)
-        .w(Len::Pct(100.))
-        .h(Len::Pct(100.))
-        .id("rack");
+        return welcome(ui, app, out);
     }
     // What the rack has of the editor's width for a library's view.
     let browser = if app.view.browser_hidden {
@@ -74,6 +64,54 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     strips.push(foot(ui, app, out));
     col(strips).scroll().min_h(0).w(Len::Pct(100.)).id("rack")
+}
+
+/// The empty rack: what to do first. With no libraries, add the folder
+/// they are in; with some, pick an instrument (showing the browser if it
+/// is hidden). Either way an instrument or a MIDI file dropped on the
+/// window plays too.
+fn welcome(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let (head, line) = if app.libraries.is_empty() {
+        (
+            "Add your libraries",
+            "Show KONTRA the folder your Kontakt or UVI libraries are in, then pick an instrument.",
+        )
+    } else {
+        (
+            "Pick an instrument",
+            "Double-click one in the browser, or drag it here.",
+        )
+    };
+    let mut items = vec![spacer(), title(head), caption(line).fill(secondary())];
+    let action = if app.libraries.is_empty() {
+        Some(("rack-add-folder", "Add a library folder…"))
+    } else if app.view.browser_hidden {
+        Some(("rack-show-browser", "Show the browser"))
+    } else {
+        None
+    };
+    if let Some((id, label)) = action {
+        let r = kit::button(ui, id, label, false);
+        if r.changed {
+            match id {
+                "rack-add-folder" => out.push(Action::AddFolder),
+                _ => app.view.browser_hidden = false,
+            }
+        }
+        items.push(r.el.fill(Role::Raised));
+    }
+    items.extend([
+        caption("You can also drop an instrument or a MIDI file on the window.")
+            .fill(secondary())
+            .id("rack-drop-hint"),
+        spacer(),
+    ]);
+    col(items)
+        .gap(SPACE)
+        .align(Align::Center)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.))
+        .id("rack")
 }
 
 /// v2's load chip: shown until the instrument plays.

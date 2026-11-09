@@ -102,19 +102,6 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if let Some(o) = order.changed {
         v.descending = o == 1;
     }
-    let shelves = [Shelf::All, Shelf::Favorites, Shelf::Recent];
-    let at = shelves.iter().position(|&s| s == v.shelf);
-    let filter = kit::dropdown(
-        ui,
-        &mut v.menu,
-        "filter",
-        (Some(Icon::Filter), "", "Show"),
-        &["All libraries", "Favorites", "Recent"],
-        at,
-    );
-    if let Some(&s) = filter.changed.and_then(|s| shelves.get(s)) {
-        v.shelf = s;
-    }
     let add = icon_button(ui, "browser-add", Icon::Plus, "Add a library folder", false);
     if add.changed {
         out.push(Action::AddFolder);
@@ -131,59 +118,93 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         out,
     );
     let starred = app.libraries.iter().filter(|l| l.starred).count();
-    let mut shelf_rows = Vec::new();
-    for (shelf, icon, label, n) in [
-        (Shelf::Favorites, Icon::Star, "Favorites", starred),
-        (Shelf::Recent, Icon::Clock, "Recent", app.recent.len()),
-    ] {
-        let id = format!("shelf-{label}");
-        let on = app.view.shelf == shelf;
-        if ui.get(id.clone()).activated() {
-            app.view.shelf = if on { Shelf::All } else { shelf };
-        }
-        shelf_rows.push(
-            interactive(
-                row![
-                    stack![glyph(icon, TEXT, secondary()).centered()]
-                        .square(CONTROL)
-                        .fill(Role::Field),
-                    body(label).text_size(TEXT).grow(1),
-                    caption(n.to_string()).fill(secondary()),
-                ]
-                .gap(SPACE)
-                .align(Align::Center)
-                .h(CONTROL + TIGHT)
-                .pad((0., SPACE))
-                .when(on, |e| e.fill(Role::Raised)),
-            )
-            .focusable()
-            .a11y(A11y::Button)
-            .named(label)
-            .id(id),
-        );
+    let shelf_row = shelves(
+        ui,
+        "shelf",
+        [
+            (starred, app.view.shelf == Shelf::Favorites),
+            (app.recent.len(), app.view.shelf == Shelf::Recent),
+        ],
+    );
+    if let Some(picked) = shelf_row.changed {
+        let shelf = [Shelf::Favorites, Shelf::Recent]
+            .get(picked)
+            .copied()
+            .unwrap_or_default();
+        app.view.shelf = if app.view.shelf == shelf {
+            Shelf::All
+        } else {
+            shelf
+        };
     }
     let list = if app.view.shelf == Shelf::Recent {
         recent(ui, app, out)
     } else {
-        library_list(ui, app)
+        library_list(ui, app, out)
     };
     col![
-        row![
-            search.el.grow(1).min_w(0),
-            order.el,
-            filter.el,
-            add.el,
-            hide.el
-        ]
-        .gap(TIGHT)
-        .align(Align::Center)
-        .pad(kit::edges(SPACE, SPACE, 0., SPACE)),
+        row![search.el.grow(1).min_w(0), order.el, add.el, hide.el]
+            .gap(TIGHT)
+            .align(Align::Center)
+            .pad(kit::edges(SPACE, SPACE, 0., SPACE)),
         formats,
         rule(),
-        col(shelf_rows).pad((TIGHT, 0.)),
+        shelf_row.el,
         rule(),
         list.grow(1).min_h(0),
     ]
+}
+
+/// Favorites and Recent side by side, each with how many it holds, `id`
+/// and the label naming each: a click on one narrows the list to it (the
+/// caller turns a second click back to all). Which was clicked.
+pub(super) fn shelves(
+    ui: &mut Ui,
+    id: &str,
+    [(starred, favorites), (played, recent)]: [(usize, bool); 2],
+) -> Response<Option<usize>> {
+    let mut picked = None;
+    let cells: Vec<El> = [
+        (Icon::Star, "Favorites", starred, favorites),
+        (Icon::Clock, "Recent", played, recent),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(n, (icon, label, count, on))| {
+        let id = format!("{id}-{label}");
+        if ui.get(id.clone()).activated() {
+            picked = Some(n);
+        }
+        let ink = if on {
+            Fill::from(Role::Ink)
+        } else {
+            secondary()
+        };
+        interactive(
+            row![
+                glyph(icon, TEXT, ink.clone()),
+                body(label).text_size(TEXT).fill(ink).lines(1).grow(1),
+                caption(count.to_string()).fill(secondary()),
+            ]
+            .gap(TIGHT * 1.5)
+            .align(Align::Center)
+            .h(CONTROL)
+            .pad((TIGHT * 2., 0.))
+            .grow(1)
+            .w(0.)
+            .fill(if on { Role::Raised } else { Role::Field }),
+        )
+        .focusable()
+        .a11y(A11y::Toggle { on })
+        .named(label)
+        .tip(format!("Show only {}; again for all", label.to_lowercase()))
+        .id(id)
+    })
+    .collect();
+    Response {
+        el: row(cells).gap(TIGHT).pad(TIGHT).shrink(0),
+        changed: picked,
+    }
 }
 
 /// The browser's tabs, Kontakt, Falcon / UVI and Songs, and how many
@@ -219,7 +240,61 @@ pub(super) fn formats(
         .pad(kit::edges(0., SPACE, 0., 0.))
 }
 
-fn library_list(ui: &mut Ui, app: &mut App) -> El {
+/// Why a list shows nothing, and what to do about it: `lines` dim and
+/// centred, then an action when there is one.
+pub(super) fn empty(lines: &[&str], action: Option<El>) -> El {
+    let mut items: Vec<El> = (lines.iter())
+        .map(|l| {
+            caption((*l).to_owned())
+                .fill(secondary())
+                .lines(3)
+                .max_size((SIDEBAR - 4. * SPACE, TEXT * 4.))
+        })
+        .collect();
+    items.extend(action);
+    col(items)
+        .gap(SPACE)
+        .align(Align::Center)
+        .pad(SPACE * 2.)
+        .w(Len::Pct(100.))
+}
+
+/// The library list's empty state: nothing found yet, nothing of this
+/// format, no favorites, or no match.
+fn no_libraries(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
+    let v = &app.view;
+    let add = |ui: &mut Ui, out: &mut Vec<Action>| {
+        let r = kit::button(ui, "browser-empty-add", "Add a folder…", false);
+        if r.changed {
+            out.push(Action::AddFolder);
+        }
+        r.el.fill(Role::Raised)
+            .tip("Pick the folder your libraries are in; KONTRA finds them inside it")
+    };
+    let format = if v.format == Format::Uvi {
+        "Falcon / UVI"
+    } else {
+        "Kontakt"
+    };
+    if !v.search.is_empty() {
+        return empty(&["Nothing matches"], None);
+    }
+    if app.libraries.is_empty() {
+        let lines: &[&str] = if app.folders.is_empty() {
+            &["No libraries yet", "Add the folder your libraries are in"]
+        } else {
+            &["No libraries found in your folders yet"]
+        };
+        return empty(lines, Some(add(ui, out)));
+    }
+    if v.shelf == Shelf::Favorites {
+        return empty(&["No favorites yet: star a library to keep it here"], None);
+    }
+    let none = format!("No {format} libraries in your folders");
+    empty(&[&none], Some(add(ui, out)))
+}
+
+fn library_list(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let v = &app.view;
     let mut shown: Vec<(usize, &super::Library)> = app
         .libraries
@@ -236,12 +311,7 @@ fn library_list(ui: &mut Ui, app: &mut App) -> El {
         shown.reverse();
     }
     if shown.is_empty() {
-        let why = if app.libraries.is_empty() {
-            "No libraries yet"
-        } else {
-            "Nothing matches"
-        };
-        return caption(why).fill(secondary()).pad(SPACE * 2.);
+        return no_libraries(ui, app, out);
     }
     let mut picked = None;
     let mut covers = app.covers.as_mut();
@@ -342,9 +412,7 @@ fn recent(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         })
         .collect();
     if rows.is_empty() {
-        return caption("Nothing loaded yet")
-            .fill(secondary())
-            .pad(SPACE * 2.);
+        return empty(&["Nothing loaded yet"], None);
     }
     col(rows).gap(1).pad(TIGHT).scroll().min_h(0)
 }
@@ -363,7 +431,9 @@ fn presets(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .library
         .and_then(|n| app.libraries.get_mut(n).map(|l| (n, l)))
     else {
-        return col![search.el];
+        let hint = (!app.libraries.is_empty())
+            .then(|| empty(&["Pick a library above to see its instruments"], None));
+        return col![search.el, col(hint)];
     };
     let cover = (app.covers.as_mut()).and_then(|c| cover(c, lib, &l.art));
     let star = icon_button(ui, "star", Icon::Star, "Favorite", l.starred);

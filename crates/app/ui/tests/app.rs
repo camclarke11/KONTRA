@@ -120,6 +120,46 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
     );
 }
 
+/// An empty editor says what to do first, with the button that does it:
+/// add the folder the libraries are in; with libraries, pick one (and
+/// show the browser to pick from); with no songs, add a folder of them.
+#[test]
+fn an_empty_editor_says_what_to_do_first() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        click(&mut ui, &mut app, "rack-add-folder"),
+        [Action::AddFolder]
+    );
+    assert_eq!(
+        click(&mut ui, &mut app, "browser-empty-add"),
+        [Action::AddFolder]
+    );
+    app.libraries = vec![Library {
+        name: "Una Corda".into(),
+        format: Format::Kontakt,
+        presets: vec!["Cotton".into()],
+        starred: false,
+        art: Vec::new(),
+    }];
+    app.view.browser_hidden = true;
+    settle(&mut ui, &mut app);
+    let shown = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).is_some();
+    assert!(!shown(&ui, "rack-add-folder"));
+    assert!(click(&mut ui, &mut app, "rack-show-browser").is_empty());
+    assert!(!app.view.browser_hidden);
+    assert!(!shown(&ui, "rack-show-browser"), "the browser is there");
+    // The Falcon / UVI tab has none of them.
+    click(&mut ui, &mut app, "format-Falcon / UVI");
+    assert!(shown(&ui, "browser-empty-add"));
+    click(&mut ui, &mut app, "format-Songs");
+    assert_eq!(
+        click(&mut ui, &mut app, "songs-empty-add"),
+        [Action::Songs(app::SongAction::AddFolder(None))]
+    );
+}
+
 /// "Play MIDI…" in the header asks for a file, and stays to pick another
 /// while one plays; the song's transport is the keyboard bar's, and its
 /// Stop stops it. However much is going on, a 900 pt window keeps every

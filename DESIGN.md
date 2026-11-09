@@ -148,7 +148,7 @@ Panels, keyboard keys, and search fields are square. Action controls use only a 
 
 ### Inputs / Fields
 - **Style:** the search and library-folder fields use a dark inset fill, square corners, and a short fixed height.
-- **Behavior:** search filters both libraries and instruments; folder settings remain in the same editor shell.
+- **Behavior:** search filters both libraries and instruments; folder settings remain in the same editor shell. Favorites and Recent are two chips side by side under the format tabs (a second click shows everything again). An empty list says why and offers the next step: "Add a folder…" when no libraries or songs are found, and the empty rack says to add libraries or to pick an instrument, with the button that does it.
 
 ### Rack Rows
 - **Style:** the main instrument header keeps its usual name, routing and mix settings. An expanded continuation row holds the Interface, Articulations, Mapping, Sound, Info and Scripts views and hides when folded. A preset picker sits directly below these rows for both snapshots and ordinary instrument files. The instrument's CC7 volume is in the gain control's tooltip rather than a separate strip.
@@ -157,7 +157,7 @@ Panels, keyboard keys, and search fields are square. Action controls use only a 
 ### Library Browser
 - **Style:** library cards show local artwork and a wrapped name/count row; the independent instrument list uses compact text rows.
 - **Artwork:** discover local `wallpaper.png` or embedded PNGs in NICNT/NKR files at runtime and contain them at their source aspect ratio. No artwork is bundled; review screenshots are not product assets.
-- **Songs:** a third tab beside Kontakt and Falcon / UVI lists the player's folders of MIDI files (added with + or by dropping a folder of them), each folder's own songs first and then its subfolders, every row a name with its length and tracks and a star; Favorites and Recent narrow it, the search matches names and subfolders, and a click plays the song. The song playing carries the accent edge. Under the list, the touch-ups (Auto-pedal, Humanise, Roll chords, Velocity curve) are latches two to a row with one line saying what they did to the song playing; each applies only to a file that lacks what it adds, so a recorded performance plays as written.
+- **Songs:** a third tab beside Kontakt and Falcon / UVI lists the player's folders of MIDI files (added with + or by dropping a folder of them), each folder's own songs first and then its subfolders, every row a name with its length and tracks and a star; Favorites and Recent narrow it, the search matches names and subfolders, and a click plays the song. The song playing carries the accent edge. Under the list, the touch-ups (Auto-pedal, Humanise, Roll chords, Velocity curve) are four latches in one row, their title beside one line saying what they did to the song playing; each applies only to a file that lacks what it adds, so a recorded performance plays as written.
 
 ### Keyboard
 - **Style:** a stable four-octave bed uses near-white naturals and near-black sharps, with octave controls and a restrained range label.

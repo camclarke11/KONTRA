@@ -238,7 +238,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .shrink(0),
         tabs.shrink(0),
         rule(),
-        shelves.shrink(0),
+        shelves,
         rule(),
         list.grow(1).min_h(CONTROL * 3.),
         rule(),
@@ -251,38 +251,23 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 fn shelves(ui: &mut Ui, app: &mut App) -> El {
     let book = &app.songbook;
     let starred = book.songs.iter().filter(|s| s.starred).count();
-    let mut rows = Vec::new();
-    for (shelf, icon, label, n) in [
-        (SongShelf::Favorites, Icon::Star, "Favorites", starred),
-        (SongShelf::Recent, Icon::Clock, "Recent", book.recent.len()),
-    ] {
-        let id = format!("song-shelf-{label}");
-        let on = app.view.songs.shelf == shelf;
-        if ui.get(id.clone()).activated() {
-            app.view.songs.shelf = if on { SongShelf::All } else { shelf };
-        }
-        rows.push(
-            interactive(
-                row![
-                    stack![glyph(icon, TEXT, secondary()).centered()]
-                        .square(CONTROL)
-                        .fill(Role::Field),
-                    body(label).text_size(TEXT).grow(1),
-                    caption(n.to_string()).fill(secondary()),
-                ]
-                .gap(SPACE)
-                .align(Align::Center)
-                .h(CONTROL + TIGHT)
-                .pad((0., SPACE))
-                .when(on, |e| e.fill(Role::Raised)),
-            )
-            .focusable()
-            .a11y(A11y::Button)
-            .named(label)
-            .id(id),
-        );
+    let shelf = app.view.songs.shelf;
+    let r = super::browser::shelves(
+        ui,
+        "song-shelf",
+        [
+            (starred, shelf == SongShelf::Favorites),
+            (book.recent.len(), shelf == SongShelf::Recent),
+        ],
+    );
+    if let Some(picked) = r.changed {
+        let to = [SongShelf::Favorites, SongShelf::Recent]
+            .get(picked)
+            .copied()
+            .unwrap_or_default();
+        app.view.songs.shelf = if shelf == to { SongShelf::All } else { to };
     }
-    col(rows).pad((TIGHT, 0.))
+    r.el
 }
 
 /// What the song list shows now: matches of a search, a shelf, or every
@@ -380,10 +365,20 @@ fn list(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     if rows.is_empty() {
         let book = &app.songbook;
+        if !book.scanning && book.folders.is_empty() && app.view.songs.shelf == SongShelf::All {
+            let add = kit::button(ui, "songs-empty-add", "Add a folder…", false);
+            if add.changed {
+                out.push(Action::Songs(SongAction::AddFolder(None)));
+            }
+            let lines = [
+                "No songs yet",
+                "Add a folder of MIDI files, or drop one here",
+            ];
+            let add = add.el.fill(Role::Raised);
+            return super::browser::empty(&lines, Some(add)).id("songs-empty");
+        }
         let why = if book.scanning {
             "Reading the folders…"
-        } else if book.folders.is_empty() && app.view.songs.shelf == SongShelf::All {
-            "Add a folder of MIDI files with +, or drop one here"
         } else {
             match app.view.songs.shelf {
                 _ if !app.view.songs.search.trim().is_empty() => "Nothing matches",
@@ -392,10 +387,7 @@ fn list(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
                 SongShelf::All => "No MIDI files in these folders",
             }
         };
-        return caption(why)
-            .fill(secondary())
-            .pad(SPACE * 2.)
-            .id("songs-empty");
+        return super::browser::empty(&[why], None).id("songs-empty");
     }
     col(rows)
         .gap(1)
@@ -554,15 +546,16 @@ fn song_row(
     (line, star.changed)
 }
 
-/// The touch-ups: a switch each, two to a row, and a line on what they
-/// did to the song playing (or what each is for, in its tooltip).
+/// The touch-ups: a line on what they did to the song playing beside
+/// their title, then a switch each in one row (what each is for, in its
+/// tooltip).
 fn touch_ups(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let book = &app.songbook;
     let playing =
         (app.song.as_ref()).and_then(|s| book.playing.as_ref().filter(|p| p.name == s.name));
     let mut touch = book.touch;
     let status = match playing {
-        None => "Each applies as a song is read, only where it needs it".to_owned(),
+        None => "Each applies only where a song needs it".to_owned(),
         Some(p) => status(p),
     };
     type Pick = fn(&mut Touch) -> &mut bool;
@@ -570,25 +563,25 @@ fn touch_ups(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         (
             "touch-pedal",
             "Auto-pedal",
-            "For files that never press the sustain pedal: down after each new harmony, lifted at the next and in rests",
+            "Auto-pedal, for files that never press the sustain pedal: down after each new harmony, lifted at the next and in rests",
             |t| &mut t.pedal,
         ),
         (
             "touch-humanise",
             "Humanise",
-            "For files quantised to a grid: each chord's notes spread over a few milliseconds after its top note, velocities varied",
+            "Humanise, for files quantised to a grid: each chord's notes spread over a few milliseconds after its top note, velocities varied",
             |t| &mut t.humanise,
         ),
         (
             "touch-roll",
-            "Roll chords",
-            "With Humanise: chords of four notes or more rolled from the bottom up, slightly",
+            "Roll",
+            "Roll chords, with Humanise: chords of four notes or more rolled from the bottom up, slightly",
             |t| &mut t.roll,
         ),
         (
             "touch-velocity",
-            "Velocity curve",
-            "For files whose notes share one velocity: louder on the beat and up the line, the melody over the rest",
+            "Velocity",
+            "Velocity curve, for files whose notes share one velocity: louder on the beat and up the line, the melody over the rest",
             |t| &mut t.velocity,
         ),
     ];
@@ -601,29 +594,25 @@ fn touch_ups(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             *pick(&mut touch) = !on;
             changed = true;
         }
-        cells.push(r.el.grow(1).w(0.));
+        cells.push(r.el.grow(1));
     }
     if changed {
         app.songbook.touch = touch;
         out.push(Action::Songs(SongAction::Touch(touch)));
     }
-    let mut grid = Vec::new();
-    let mut cells = cells.into_iter();
-    while let (Some(a), b) = (cells.next(), cells.next()) {
-        grid.push(row(std::iter::once(a).chain(b).collect::<Vec<_>>()).gap(TIGHT));
-    }
     col![
-        row![section("Touch-ups"), spacer()],
-        col(grid).gap(TIGHT),
         row![
+            section("Touch-ups").shrink(0),
             caption(status.clone())
                 .fill(secondary())
                 .lines(1)
                 .min_w(0)
                 .tip(status)
                 .id("touch-status"),
-            spacer()
-        ],
+        ]
+        .gap(SPACE)
+        .align(Align::Center),
+        row(cells).gap(TIGHT),
     ]
     .gap(TIGHT)
     .pad(kit::edges(TIGHT, SPACE, SPACE, SPACE))
@@ -647,11 +636,11 @@ fn status(p: &Played) -> String {
     };
     let got = names(p.applied);
     if !got.is_empty() {
-        return format!("This song got {}", got.join(", "));
+        return format!("This song: {}", got.join(", "));
     }
     let could = names(p.needs);
     if could.is_empty() {
-        "This song is played by hand: it needs none".into()
+        "This song needs none".into()
     } else {
         format!("Off for this song: {}", could.join(", "))
     }
