@@ -139,6 +139,11 @@ fn the_header_plays_and_stops_a_midi_file() {
     let scene = ui.scene().unwrap();
     assert!(scene.surface("song-play").is_none());
     assert!(scene.surface("song").is_some());
+    // A 900 pt window keeps Panic in view beside the song's transport,
+    // giving up the load readouts for it.
+    let panic = scene.surface("panic").unwrap().frame;
+    assert!(panic.x + panic.size.width <= 900., "{panic:?}");
+    assert!(scene.surface("stat-RAM").is_none());
     assert_eq!(click(&mut ui, &mut app, "song-stop"), [Action::StopSong]);
 }
 

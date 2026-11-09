@@ -572,6 +572,10 @@ fn song_control(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     stage::compact(ui, app, out)
 }
 
+/// Narrower than this, a window playing a song shows no load readouts in
+/// its header, so the song's transport, MIDI Thru and Panic fit.
+const NARROW: f64 = 1100.;
+
 fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let side = icon_button(
         ui,
@@ -659,12 +663,19 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if panic.changed {
         out.push(Action::Panic);
     }
+    // While a song's transport shares the header, a narrow window keeps
+    // the controls and drops the readouts (and so does a first frame,
+    // whose width is not known yet: a header that fits, whatever it is).
+    let roomy = app.song.is_none() || app.width >= NARROW;
     let mut items = vec![
         side.el,
         body("KONTRA").text_weight(Weight::SEMIBOLD),
         spacer(),
-        load,
-        spacer(),
+    ];
+    if roomy {
+        items.extend([load, spacer()]);
+    }
+    items.extend([
         vrule().h(CONTROL * 0.6),
         section("Master"),
         gain.el,
@@ -675,7 +686,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         song,
         thru.el.tip("Pass MIDI through to the host"),
         panic.el.tip("Stop every note"),
-    ];
+    ]);
     if !app.report.is_empty() {
         let n = app.report.len();
         let warn = icon_button(
