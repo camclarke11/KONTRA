@@ -46,12 +46,23 @@ fn zone(store: &mut Store, level: f32, group: u32) -> Zone {
 }
 
 fn engine(store: &Store, zones: Vec<Zone>, source: &str) -> Engine {
+    engine_with(store, zones, source, |_| {})
+}
+
+/// [`engine`] with the plan changed first (an envelope, a group's mods).
+fn engine_with(
+    store: &Store,
+    zones: Vec<Zone>,
+    source: &str,
+    edit: impl FnOnce(&mut Plan),
+) -> Engine {
     let script = kontra_ksp::compile(source, &[]).unwrap();
     let mut plan = Plan::new(zones, 16);
     for g in &mut plan.groups {
         g.mods.clear();
     }
     plan.scripts = vec![kontra_host::script::plan(&script, &[], &[])];
+    edit(&mut plan);
     Engine::new(Arc::new(plan), store.client(), RATE)
 }
 
@@ -367,6 +378,485 @@ fn at_pedal_up_a_script_sees_the_keys_it_held_as_up() {
     assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3);
     assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
     level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// Kontakt's pedal is a system script after the user scripts: at key-up it
+/// holds the note-off, and at pedal-up it sends the held note its note-off,
+/// so `on release` runs a second time for the same `$EVENT_ID` (NI forum
+/// 6976: "Kontakt triggers 2 release callbacks with the same $EVENT_ID: one
+/// for the Note Off event and another for the sustain pedal release").
+/// Release-sample scripts rely on it: they play the release when
+/// `%CC[64] < 64`, which under the pedal is only true in the second call.
+/// That call reads the key up (`%KEY_DOWN` 0, `$NOTE_HELD` 0), the pedal up
+/// (`%CC[64]` already 0) and the same event: its note, velocity, event
+/// parameters and polyphonic variables.
+#[test]
+fn the_pedal_up_runs_on_release_again_for_the_key_it_held() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $calls
+            declare $first
+            declare polyphonic $mine
+        end on
+        on note
+            $first := $EVENT_ID
+            set_event_par($EVENT_ID, $EVENT_PAR_0, 7)
+        end on
+        on release
+            inc($calls)
+            inc($mine)
+            message($calls & \",\" & $mine & \",\" & ($EVENT_ID = $first) & \",\" & %KEY_DOWN[60] & \",\" & $NOTE_HELD & \",\" & %CC[64] & \",\" & $EVENT_NOTE & \",\" & $EVENT_VELOCITY & \",\" & get_event_par($EVENT_ID, $EVENT_PAR_0))
+        end on",
+    );
+    assert!((level(&mut e, &[pedal(127), on(60)]) - 0.5).abs() < 1e-3);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    assert_eq!(e.last_message(), "1,1,1,0,0,127,60,127,7");
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    assert_eq!(e.last_message(), "2,2,1,0,0,0,60,127,7");
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+    // Pressing and lifting the pedal again sends nothing more.
+    level(&mut e, &[pedal(127)]);
+    level(&mut e, &[pedal(0)]);
+    assert!(e.last_message().starts_with("2,"));
+    // Without the pedal a key-up is one release.
+    level(&mut e, &[on(60)]);
+    level(&mut e, &[off(60)]);
+    assert!(
+        e.last_message().starts_with("3,1,1,"),
+        "{}",
+        e.last_message()
+    );
+}
+
+/// The pedal's note-off comes after the controller has passed the scripts:
+/// `on controller` sees the pedal up before the second `on release` runs.
+#[test]
+fn on_controller_hears_the_pedal_lift_before_the_release_it_sends() {
+    let store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut e = engine(
+        &store,
+        Vec::new(),
+        "on init
+            declare $order
+        end on
+        on controller
+            $order := $order * 10 + 1
+        end on
+        on release
+            $order := $order * 10 + 2
+            message($order)
+        end on",
+    );
+    level(&mut e, &[pedal(127), on(60)]);
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "12");
+    level(&mut e, &[pedal(0)]);
+    assert_eq!(e.last_message(), "1212");
+}
+
+/// A script note the pedal held (Una Corda's `-1` child, ended by its key)
+/// gets its second release at pedal-up too: Kontakt's pedal holds any
+/// note-off that reaches it, a script's as well as a key's.
+#[test]
+fn the_pedal_up_runs_on_release_again_for_a_script_note_it_held() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 72..=72;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $child
+            declare $calls
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $child := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, -1)
+        end on
+        on release
+            if ($EVENT_ID # $child)
+                ignore_event($EVENT_ID)
+            else
+                inc($calls)
+                message($calls & \",\" & $EVENT_NOTE & \",\" & %CC[64] & \",\" & %KEY_DOWN[60])
+            end if
+        end on",
+    );
+    assert!((level(&mut e, &[pedal(127), on(60)]) - 0.5).abs() < 1e-3);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    assert_eq!(e.last_message(), "1,72,127,0");
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    assert_eq!(e.last_message(), "2,72,0,0");
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// A script may hold back the pedal's note-off as it may a key's
+/// (`ignore_event` in `on release`): the note plays on until the script
+/// ends it.
+#[test]
+fn a_script_may_keep_a_note_past_the_pedal_up() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $id
+        end on
+        on note
+            $id := $EVENT_ID
+        end on
+        on release
+            if (%CC[64] < 64)
+                ignore_event($EVENT_ID)
+            end if
+        end on
+        on controller
+            if ($CC_NUM = 1)
+                note_off($id)
+            end if
+        end on",
+    );
+    level(&mut e, &[pedal(127), on(60)]);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    assert!(
+        (level(&mut e, &[pedal(0)]) - 0.5).abs() < 1e-3,
+        "the script keeps it"
+    );
+    let cc1 = Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 1, 1),
+    };
+    assert_eq!(level(&mut e, &[cc1]), 0.0);
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// `SET_CONDITION(NO_SYS_SCRIPT_PEDAL)` bypasses "the system script which
+/// sustains notes when CC# 64 is received" (KSP manual, Advanced Concepts):
+/// the script sustains its notes itself, so the pedal holds no key-up and
+/// no `note_off`, and sends no second release. Pianos that take the pedal
+/// this way end a note under a down pedal (a re-struck key's old note, a
+/// half-pedal damping) and it ended late, or never.
+#[test]
+fn a_script_that_bypasses_the_system_pedal_ends_notes_under_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            SET_CONDITION(NO_SYS_SCRIPT_PEDAL)
+            declare $calls
+            declare polyphonic $id
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 0)
+        end on
+        on release
+            inc($calls)
+            message($calls & \",\" & %CC[64])
+            note_off($id)
+        end on",
+    );
+    assert!((level(&mut e, &[pedal(127), on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(level(&mut e, &[off(60)]), 0.0, "the pedal holds nothing");
+    assert_eq!(e.last_message(), "1,127");
+    level(&mut e, &[pedal(0)]);
+    assert_eq!(e.last_message(), "1,127", "and sends no release");
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// Kontakt's own pedal is a switch at the MIDI threshold: 64 and above
+/// hold, 63 and below let go (MIDI 1.0 CC 64, "≤63 off, ≥64 on"; KSP
+/// scripts test `%CC[64] < 64` for up, as EvilDragon advises on VI-Control).
+/// Half-pedalling is the script's: it reads the value in between.
+#[test]
+fn the_pedal_holds_from_64_and_scripts_read_the_values_between() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on controller
+            message(%CC[64])
+        end on",
+    );
+    level(&mut e, &[pedal(63), on(60)]);
+    assert_eq!(level(&mut e, &[off(60)]), 0.0, "63 is up");
+    level(&mut e, &[pedal(64), on(60)]);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "64 is down");
+    assert!((level(&mut e, &[pedal(100)]) - 0.5).abs() < 1e-3);
+    assert_eq!(e.last_message(), "100");
+    assert!(
+        (level(&mut e, &[pedal(64)]) - 0.5).abs() < 1e-3,
+        "still down"
+    );
+    assert_eq!(level(&mut e, &[pedal(63)]), 0.0, "63 lets go");
+    assert_eq!(e.last_message(), "63");
+}
+
+/// Half-pedalling with Kontakt's pedal down: the script reads `%CC[64]`
+/// and turns the notes the pedal holds down (`change_vol`) or fades them
+/// without stopping (`fade_out(.., 0)`), then frees them as the pedal goes
+/// back down (`fade_in`). The pedal still holds them throughout and lets go
+/// at pedal-up.
+#[test]
+fn a_half_pedal_script_damps_the_notes_the_pedal_holds() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $id
+        end on
+        on note
+            $id := $EVENT_ID
+        end on
+        on controller
+            if ($CC_NUM = 64 and %KEY_DOWN[60] = 0 and %CC[64] >= 64)
+                if (%CC[64] < 80)
+                    fade_out($id, 20000, 0)
+                else
+                    fade_in($id, 10000)
+                    if (%CC[64] < 100)
+                        change_vol($id, -6021, 0)
+                    else
+                        change_vol($id, 0, 0)
+                    end if
+                end if
+            end if
+        end on",
+    );
+    level(&mut e, &[pedal(127), on(60)]);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    let half = level(&mut e, &[pedal(90)]);
+    assert!((half - 0.25).abs() < 2e-3, "-6 dB: {half}");
+    assert!(
+        level(&mut e, &[pedal(70)]).abs() < 1e-4,
+        "faded, not stopped"
+    );
+    assert_eq!(e.active_voices(), 1);
+    assert!(
+        (level(&mut e, &[pedal(127)]) - 0.5).abs() < 2e-3,
+        "back at full"
+    );
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// A stopping fade (`fade_out(.., 1)`) under the pedal ends the note: the
+/// pedal no longer holds it, sends it no release at pedal-up, and its event
+/// ends. The pedal kept it in the note table for good, a held note never
+/// reported ended.
+#[test]
+fn a_note_faded_out_under_the_pedal_is_no_longer_held_by_it() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $id
+            declare $calls
+        end on
+        on note
+            $id := $EVENT_ID
+        end on
+        on release
+            inc($calls)
+            message($calls)
+        end on
+        on controller
+            if ($CC_NUM = 64 and %CC[64] >= 64 and %CC[64] < 100)
+                fade_out($id, 10000, 1)
+            end if
+        end on",
+    );
+    level(&mut e, &[pedal(127), on(60)]);
+    level(&mut e, &[off(60)]);
+    assert_eq!(e.last_message(), "1");
+    let mut ended = Vec::new();
+    assert_eq!(level(&mut e, &[pedal(80)]), 0.0);
+    ended.extend_from_slice(e.ended());
+    level(&mut e, &[]);
+    ended.extend_from_slice(e.ended());
+    assert_eq!(e.active_voices(), 0);
+    assert_eq!(ended.len(), 1, "its event ended");
+    level(&mut e, &[pedal(0)]);
+    assert_eq!(e.last_message(), "1", "no release for an ended note");
+}
+
+/// A script that owns the pedal can re-pedal: at half pedal it lets the
+/// note fade without stopping it, and pressing the pedal again before the
+/// note dies catches it (`fade_in`). Kontakt's own pedal cannot: see
+/// [`pressing_the_pedal_again_does_not_catch_notes_already_releasing`].
+#[test]
+fn a_script_that_owns_the_pedal_catches_a_fading_note_again() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            SET_CONDITION(NO_SYS_SCRIPT_PEDAL)
+            declare %held[128]
+        end on
+        on release
+            if (%CC[64] > 0)
+                ignore_event($EVENT_ID)
+                %held[$EVENT_NOTE] := $EVENT_ID
+            end if
+        end on
+        on controller
+            if ($CC_NUM = 64 and %held[60] # 0)
+                if (%CC[64] = 0)
+                    note_off(%held[60])
+                    %held[60] := 0
+                else
+                    if (%CC[64] < 64)
+                        fade_out(%held[60], 50000, 0)
+                    else
+                        fade_in(%held[60], 10000)
+                    end if
+                end if
+            end if
+        end on",
+    );
+    level(&mut e, &[pedal(127), on(60)]);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    assert!(level(&mut e, &[pedal(40)]).abs() < 1e-4, "half: faded");
+    assert_eq!(e.active_voices(), 1);
+    assert!(
+        (level(&mut e, &[pedal(127)]) - 0.5).abs() < 2e-3,
+        "caught again"
+    );
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// A release time a script sets while a note is held reaches the notes
+/// that start after it; the held note keeps the envelope it started with.
+/// Kontakt is reported to compute a voice's envelope at note-on (EvilDragon
+/// on VI-Control, unconfirmed by NI's manuals), and KONTRA reads it there
+/// (`Engine::envelope`), so a half-pedal script that moves
+/// `$ENGINE_PAR_RELEASE` shapes the next notes, not the ones the pedal
+/// holds: those it damps with `fade_out` or `change_vol` (above).
+#[test]
+fn a_release_time_set_under_the_pedal_reaches_the_next_notes() {
+    use kontra_engine::ir;
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine_with(
+        &store,
+        vec![z],
+        "on controller
+            if ($CC_NUM = 64)
+                set_engine_par($ENGINE_PAR_RELEASE, 1000000, 0, 0, -1)
+            end if
+        end on",
+        |plan| {
+            let g = &mut plan.groups[0];
+            g.envelope.release = 16;
+            g.mods.push(ir::Mod {
+                name: "ENV_AHDSR".into(),
+                slot: 0,
+                target: 0,
+                bypass: false,
+                kind: ir::ModKind::Envelope,
+            });
+        },
+    );
+    level(&mut e, &[on(60), pedal(127)]);
+    assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0, "its own 16-frame release");
+    level(&mut e, &[on(60)]);
+    assert!(
+        level(&mut e, &[off(60)]) > 0.4,
+        "the next note's long release"
+    );
+}
+
+/// Damper behaviour: at pedal-up a held note decays through its envelope's
+/// release, as at a key-up, never cut: a key's own note and a script's
+/// (ended under the pedal by `note_off`) alike.
+#[test]
+fn at_pedal_up_held_notes_decay_through_their_release() {
+    for source in [
+        "on note
+        end on",
+        "on init
+            declare polyphonic $id
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 0)
+        end on
+        on release
+            note_off($id)
+        end on",
+    ] {
+        let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+        let z = zone(&mut store, 0.5, 0);
+        // 200 ms, linear: 4096 frames into it the level is 0.5 · (1 − 4096/9600).
+        let mut e = engine_with(&store, vec![z], source, |plan| {
+            plan.groups[0].envelope.release = 9600;
+        });
+        level(&mut e, &[pedal(127), on(60)]);
+        assert!((level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3, "held");
+        let first = level(&mut e, &[pedal(0)]);
+        assert!(
+            (first - 0.5 * (1.0 - 4096.0 / 9600.0)).abs() < 0.01,
+            "{first}"
+        );
+        let second = level(&mut e, &[]);
+        assert!(0.0 < second && second < first, "{second}");
+        assert_eq!(level(&mut e, &[]), 0.0);
+        assert_eq!(e.active_voices(), 0);
+    }
+}
+
+/// Kontakt's pedal holds the note-offs that arrive while it is down; one it
+/// already delivered stays delivered. Pressed again, it does not catch the
+/// notes still in their release (an envelope's release runs to its end),
+/// and lifted again it sends them nothing. Libraries that "re-pedal" script
+/// it themselves (above).
+#[test]
+fn pressing_the_pedal_again_does_not_catch_notes_already_releasing() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine_with(
+        &store,
+        vec![z],
+        "on init
+            declare $calls
+        end on
+        on release
+            inc($calls)
+            message($calls)
+        end on",
+        |plan| plan.groups[0].envelope.release = 9600,
+    );
+    level(&mut e, &[pedal(127), on(60)]);
+    level(&mut e, &[off(60)]);
+    let first = level(&mut e, &[pedal(0)]);
+    assert!(0.0 < first && first < 0.5, "{first}");
+    let second = level(&mut e, &[pedal(127)]);
+    assert!(0.0 < second && second < first, "still releasing: {second}");
+    assert_eq!(level(&mut e, &[]), 0.0);
+    level(&mut e, &[pedal(0)]);
+    assert_eq!(e.last_message(), "2");
     assert_eq!(e.active_voices(), 0);
 }
 

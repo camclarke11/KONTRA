@@ -106,6 +106,7 @@ pub fn plan(script: &Script, saved: &[String], data: &[(String, Vec<u8>)]) -> Sc
         arrays: arrays(script),
         hears_own_releases: true,
         held_release_ends_children: true,
+        bypasses_pedal: script.conditions.iter().any(|c| c == "NO_SYS_SCRIPT_PEDAL"),
         links: Vec::new(),
         controls: controls(script),
         engine_pars: EnginePars {
@@ -419,6 +420,7 @@ pub fn lua_plan(compiled: kontra_lua::Compiled) -> ScriptPlan {
         hears_own_releases: false,
         // A held-back NoteOff keeps the posted note (`_onRelease` posts it).
         held_release_ends_children: false,
+        bypasses_pedal: false,
         links: Vec::new(),
     }
 }

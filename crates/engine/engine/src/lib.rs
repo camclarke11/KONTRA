@@ -572,7 +572,7 @@ impl Engine {
         if n.pedal_held {
             // Already ended once: its sound waits for the pedal.
             if !pedal {
-                self.release(note);
+                self.pedal_up(note);
             }
             return;
         }
@@ -585,6 +585,51 @@ impl Engine {
             {
                 n.key_up = true;
                 n.pedal_held = true;
+            }
+            return;
+        }
+        self.release(note);
+    }
+
+    /// The sustain pedal lifts off a note it held. Kontakt's pedal is a
+    /// system script after the user scripts (KSP manual, Advanced Concepts:
+    /// "the system script which sustains notes when CC# 64 is received"):
+    /// it held the note's note-off, and now sends the note its note-off, so
+    /// the release callbacks run a second time for the same event (NI
+    /// forum, discussion 6976: "Kontakt triggers 2 release callbacks with
+    /// the same $EVENT_ID: one for the Note Off event and another for the
+    /// sustain pedal release"; Big Bob's 2007 release-callback study on
+    /// VI-Control names "releasing a key while the sustain pedal is active"
+    /// as a release that comes again). The scripts read the key up, the
+    /// pedal already up (`%CC[64]` below 64, as KrisY reports on
+    /// VI-Control in 2019) and the same event, its parameters and
+    /// polyphonic variables. Release-sample scripts that play only when
+    /// `%CC[64] < 64` sound their pedalled notes' releases here.
+    ///
+    /// A key's note-off may be held back again (`ignore_event` in `on
+    /// release`): its voices play on until the script ends the note. A
+    /// script note's note-off cannot be, as with `note_off` (see
+    /// [`Self::end_note`]). Not measured: whether Kontakt also sends this
+    /// second release to a script note, which follows from the pedal
+    /// holding any note-off that reaches it.
+    fn pedal_up(&mut self, note: NoteRef) {
+        let Some(n) = self.notes.get_mut(note) else {
+            return;
+        };
+        if !n.pedal_held {
+            return;
+        }
+        n.pedal_held = false;
+        if n.released {
+            return;
+        }
+        let host = n.origin == Origin::Host;
+        if let Some(slot) = self.release_callbacks(note)
+            && host
+        {
+            let script = self.plan.scripts.get(usize::from(slot));
+            if script.is_some_and(|s| s.held_release_ends_children) {
+                self.end_children(note);
             }
             return;
         }
