@@ -303,7 +303,18 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
     if fold.changed {
         p.open = !p.open;
     }
-    let name = body(p.name.clone())
+    let names: Vec<&str> = presets
+        .iter()
+        .map(|s| s.rsplit('/').next().unwrap_or(s))
+        .collect();
+    let current = names.iter().position(|&s| s == p.name);
+    // The preset field names what plays, so the title names its library;
+    // one not in the library's list keeps its own name.
+    let title = match current {
+        Some(_) if !p.library.is_empty() => p.library.clone(),
+        _ => p.name.clone(),
+    };
+    let name = body(title)
         .text_weight(Weight::SEMIBOLD)
         .lines(1)
         .min_w(TEXT * 6.)
@@ -318,11 +329,6 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
             .min_w(0),
         false => name,
     };
-    let names: Vec<&str> = presets
-        .iter()
-        .map(|s| s.rsplit('/').next().unwrap_or(s))
-        .collect();
-    let current = names.iter().position(|&s| s == p.name);
     // v2's preset field beside the name: what plays, or what to pick.
     let shown = current
         .and_then(|c| names.get(c).copied())
@@ -331,7 +337,7 @@ fn header(ui: &mut Ui, app: &mut App, n: usize, out: &mut Vec<Action>) -> El {
         ui,
         menu,
         &id("preset"),
-        (None, shown, "Preset"),
+        (None, shown, "Preset: another of the library's instruments"),
         &names,
         current,
     );
