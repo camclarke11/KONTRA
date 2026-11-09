@@ -645,6 +645,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
         app.song = player.song(&p.shared.song, screen.full());
+        crate::studio::fill(&p.shared, &mut app);
         // Space, F and Escape, which the window handed over.
         let mut changed = Vec::new();
         for key in keys.take() {
@@ -693,6 +694,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 p.shared.folder.ask(from);
                 continue;
             }
+            // Record, Practice and Export ([`crate::studio`]).
+            if crate::studio::act(&p.shared, &action) {
+                continue;
+            }
             match action {
                 Action::PlaySong => {
                     p.shared.song.dialog.ask(p.shared.song.folder());
@@ -724,6 +729,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 _ => {}
             }
             if let Some(event) = played(&action) {
+                crate::studio::played(&p.shared, &event);
                 if let Some(player) = lock(&p.shared.player).as_ref() {
                     player.play(event);
                 }
@@ -806,6 +812,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             | kontra_ui::pictures::arrived()
             | follow.load(Ordering::Relaxed)
             | keying.waiting()
+            // Practice marks a key struck or a wrong one, song moving or not.
+            | watched.shared.song.practice.changed()
     })
     // Space, F and Escape for the transport and the Stage, before MUI and
     // the host see them; the rest go on as before.

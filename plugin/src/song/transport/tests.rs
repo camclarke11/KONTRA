@@ -583,3 +583,58 @@ fn the_song_read_again_plays_on_from_where_it_was_with_its_loop() {
     let position = songs.position_at(Instant::now());
     assert!(position.is_some_and(|p| p >= 1.), "{position:?}");
 }
+
+#[test]
+fn practice_waits_for_the_players_chord_then_plays_on_at_any_speed() {
+    use kontra_host::rack::HostNote;
+    use kontra_ui::practice::Hands;
+    let songs = Songs::default();
+    songs.practice.set_hands(Hands::Right);
+    songs.play(hands());
+    songs.transport().set_speed(2.);
+    let mut now = None;
+    let mut out = Vec::with_capacity(256);
+    let mut ons = Vec::new();
+    let mut frame = 0u64;
+    let mut block = |input: &[(u32, Event)], ons: &mut Vec<(u64, u8)>| {
+        out.clear();
+        out.extend_from_slice(input);
+        songs.process(&mut now, RATE, 512, &mut out);
+        let played = out.get(input.len()..).unwrap_or_default();
+        ons.extend(played.iter().filter_map(|(f, e)| match e {
+            Event::NoteOn { note, .. } => Some((frame + u64::from(*f), note.key)),
+            _ => None,
+        }));
+        frame += 512;
+    };
+    // The right hand's C5 starts the song: it waits, the left's C3 too.
+    for _ in 0..10 {
+        block(&[], &mut ons);
+    }
+    assert!(ons.is_empty(), "nothing before the player: {ons:?}");
+    let at = songs.position_at(Instant::now() + Duration::from_secs(1));
+    assert_eq!(at, Some(0.), "the playhead waits");
+    // Struck 100 frames into a block: C3 on that frame, C5 the player's.
+    let c5 = HostNote {
+        port: 0,
+        channel: 0,
+        key: 72,
+        id: -1,
+        clap: false,
+    };
+    let struck = 10 * 512 + 100;
+    let on = Event::NoteOn {
+        note: c5,
+        velocity: 0.8,
+        tune: 0.,
+    };
+    block(&[(100, on)], &mut ons);
+    assert_eq!(ons, [(struck, 48)]);
+    // At double speed it reaches D5, 0.5 s in, after 0.25 s, and waits.
+    for _ in 0..60 {
+        block(&[], &mut ons);
+    }
+    assert_eq!(ons, [(struck, 48)], "D5 is the player's");
+    let at = songs.position_at(Instant::now() + Duration::from_secs(1));
+    assert_eq!(at, Some(0.5), "waiting at D5");
+}

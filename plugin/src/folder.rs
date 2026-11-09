@@ -31,6 +31,8 @@ pub enum Pick {
     Song,
     /// A folder of MIDI files, for the browser's Songs tab.
     Songs,
+    /// The folder recordings and exports go to ([`crate::record`]).
+    Recordings,
 }
 
 impl Pick {
@@ -39,6 +41,7 @@ impl Pick {
             Self::Folder => "A folder of libraries",
             Self::Song => "A MIDI file to play",
             Self::Songs => "A folder of MIDI files",
+            Self::Recordings => "A folder for recordings and exports",
         }
     }
 }
@@ -88,7 +91,9 @@ impl Dialog {
     fn open(&self, from: Option<PathBuf>) -> Option<mui_native_dialog::DialogJob> {
         use mui_native_dialog::{DialogFilter, DialogKind, DialogRequest};
         let (kind, filters) = match self.pick {
-            Pick::Folder | Pick::Songs => (DialogKind::PickFolder { multiple: false }, Vec::new()),
+            Pick::Folder | Pick::Songs | Pick::Recordings => {
+                (DialogKind::PickFolder { multiple: false }, Vec::new())
+            }
             Pick::Song => (
                 DialogKind::OpenFile { multiple: false },
                 vec![DialogFilter {
@@ -122,7 +127,7 @@ impl Dialog {
                     d = d.set_parent(&moose::mui::ParentWindow::win32(owner));
                 }
                 match pick {
-                    Pick::Folder | Pick::Songs => d.pick_folder(),
+                    Pick::Folder | Pick::Songs | Pick::Recordings => d.pick_folder(),
                     Pick::Song => d.add_filter("MIDI file", &SONG_EXTENSIONS).pick_file(),
                 }
             })

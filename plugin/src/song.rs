@@ -64,6 +64,9 @@ pub struct Song {
     /// Where it plays from: seconds into it, or None for its start (after
     /// any count-in). The same song read again plays on from where it was.
     from: Option<f64>,
+    /// Practice: the notes the song waits for the player to play
+    /// ([`crate::practice`]), set as it starts.
+    gate: crate::practice::Gate,
 }
 
 /// What a song is called, by whom, and what its voices are.
@@ -142,6 +145,7 @@ impl Song {
             beats: meta.beats,
             about,
             from: None,
+            gate: crate::practice::Gate::default(),
         };
         Ok((song, touched))
     }
@@ -438,6 +442,12 @@ pub struct Songs {
     shown: AtomicU32,
     /// Whether `KONTRA_PLAY` has been read ([`Songs::autoplay`]).
     autoplayed: AtomicBool,
+    /// Practice mode: the hands chosen and what it shows ([`crate::practice`]).
+    pub practice: crate::practice::Practice,
+    /// The file the last song came from, to export.
+    path: Mutex<Option<PathBuf>>,
+    /// The touch-ups it was read with, to export it as it played.
+    touch: Mutex<Touch>,
 }
 
 impl Default for Songs {
@@ -454,6 +464,9 @@ impl Default for Songs {
             folder: Mutex::new(None),
             shown: AtomicU32::new(u32::MAX),
             autoplayed: AtomicBool::new(false),
+            practice: crate::practice::Practice::default(),
+            path: Mutex::new(None),
+            touch: Mutex::new(Touch::NONE),
         }
     }
 }
@@ -465,15 +478,31 @@ impl Songs {
     /// read again), or from its start.
     pub fn open_at(&self, path: &Path, touch: &Touch, at: Option<f64>) -> Result<Touched, String> {
         let (mut song, touched) = Song::open(path, touch)?;
-        song.from = at.filter(|s| s.is_finite() && *s > 0.).map(|s| s.min(song.length));
+        song.from = at
+            .filter(|s| s.is_finite() && *s > 0.)
+            .map(|s| s.min(song.length));
         *lock(&self.folder) = path.parent().map(Path::to_path_buf);
+        *lock(&self.path) = Some(path.to_path_buf());
+        *lock(&self.touch) = *touch;
         self.play(song);
         Ok(touched)
+    }
+
+    /// The file the last song played came from.
+    pub fn path(&self) -> Option<PathBuf> {
+        lock(&self.path).clone()
+    }
+
+    /// The touch-ups the last song played was read with.
+    pub fn touch(&self) -> Touch {
+        *lock(&self.touch)
     }
 
     /// Plays `song`, replacing what plays.
     pub fn play(&self, mut song: Song) {
         *lock(&self.title) = Some((song.name.clone(), song.length));
+        // Practice keeps the notes it waits for; built here, off audio.
+        song.gate = crate::practice::Gate::new(&song.notes);
         // The audio thread has no use for them.
         *lock(&self.notes) = std::mem::take(&mut song.notes);
         *lock(&self.about) = song.about.clone();
@@ -574,6 +603,8 @@ impl Songs {
         frames: usize,
         out: &mut Vec<(u32, Event)>,
     ) -> bool {
+        // What `out` holds so far is the player's: practice listens to it.
+        let heard = out.len();
         let mut added = false;
         while let Some(command) = self.commands.pop() {
             if let Some(mut old) = now.take() {
@@ -591,11 +622,13 @@ impl Songs {
             }
         }
         let Some(playing) = now.as_mut() else {
+            self.practice.clear();
             return added;
         };
         let before = out.len();
         let settings = self.transport.settings();
-        let r = playing.play(&settings, &self.transport, rate, frames, out);
+        let practice = (&self.practice, heard);
+        let r = playing.play(&settings, &self.transport, practice, rate, frames, out);
         let after = f64::from(r.from) / rate.max(1.0);
         self.transport.head.stamp(r.base, after, r.end, r.speed);
         // Played to its end: it stays, paused there, to play again.

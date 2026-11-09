@@ -27,6 +27,7 @@ use std::time::Instant;
 use kontra_host::rack::Event;
 
 use super::{Message, Song, Songs, event, lock};
+use crate::practice::Practice;
 
 /// The slowest and fastest speeds.
 pub const SLOWEST: f64 = 0.25;
@@ -604,14 +605,18 @@ impl Playing {
         self.next = (self.song.events).partition_point(|e| frame(e.0, rate) < at);
         self.beat = (self.song.beats).partition_point(|b| frame(b.time, rate) < at);
         self.count = None;
+        // Practice waits next for the player's first chord from here.
+        self.song.gate.find(at.max(0.) as u64, rate);
     }
 
     /// The song's events to frame `until` of the song: this block's,
-    /// stretch by stretch, at their frames in it.
+    /// stretch by stretch, at their frames in it. The first `heard` of
+    /// `out` are the player's events this block, which `practice` waits for.
     pub(super) fn play(
         &mut self,
         s: &Settings,
         t: &Transport,
+        (practice, heard): (&Practice, usize),
         rate: f64,
         frames: usize,
         out: &mut Vec<(u32, Event)>,
@@ -664,9 +669,22 @@ impl Playing {
         let speed = s.speed.clamp(SLOWEST, FASTEST);
         let region = (s.region(self.song.length)).map(|(a, b)| (frame(a, rate), frame(b, rate)));
         let total = frames as f64;
+        // Practice: the song stands still while it waits for the player
+        // (`idle` frames), and stops at the next notes of theirs not yet
+        // played (`stop`). Counting in, it runs up to their first chord.
+        let (idle, stop) = if self.at < 0. {
+            (self.song.gate).clock(practice, &[], (0, 0), rate, speed);
+            (0., self.waits_at())
+        } else {
+            let input = out.get(..heard).unwrap_or_default();
+            let at = (self.at as u64, frames as u64);
+            let (idle, _) = (self.song.gate).clock(practice, input, at, rate, speed);
+            (idle.min(frames as u64) as f64, self.waits_at())
+        };
+        let mut stop = stop;
         // Output frames done; the frame and song frame the stretch starts at.
-        let mut done = 0.;
-        let mut from = (0, self.at);
+        let mut done = idle;
+        let mut from = ((done as u32).min(frames as u32 - 1), self.at);
         let mut last = None;
         for _ in 0..4 {
             if let Some((a, b)) = region
@@ -677,8 +695,9 @@ impl Playing {
                 self.locate(a / rate, rate);
                 self.chase(at, out);
                 from = (at, self.at);
+                stop = self.waits_at();
             }
-            let end = self.at + (total - done) * speed;
+            let end = (self.at + (total - done) * speed).min(stop).max(self.at);
             let until = region.map_or(end, |(_, b)| end.min(b));
             last = self
                 .events(s, until, done, speed, frames, rate, out)
@@ -735,7 +754,10 @@ impl Playing {
                 .max(done)
                 .min(latest) as u32;
             let voice = self.song.voice_of.get(self.next).copied().unwrap_or(NONE);
-            self.send(message, voice, at, s, out);
+            // Practising, the player's own notes are theirs to play.
+            if self.song.gate.plays(voice, message) {
+                self.send(message, voice, at, s, out);
+            }
             last = Some(at);
             self.next += 1;
         }
@@ -821,6 +843,11 @@ impl Playing {
                 push(out, at, event([status, key, value]));
             }
         }
+    }
+
+    /// The song frame practice waits at next, or none.
+    fn waits_at(&self) -> f64 {
+        (self.song.gate.waits_at()).map_or(f64::INFINITY, |f| f as f64)
     }
 
     /// Notes sounding that the mutes now silence end at the block's start.

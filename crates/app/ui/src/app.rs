@@ -69,6 +69,12 @@ pub struct App {
     pub song: Option<Song>,
     /// The browser's Songs tab: folders of MIDI files and their touch-ups.
     pub songbook: Songbook,
+    /// Recording what the player plays ([`crate::record`]).
+    pub record: crate::record::Recording,
+    /// Practice mode: the song waits for the player ([`crate::practice`]).
+    pub practice: crate::practice::Practice,
+    /// Exporting the song to audio or video ([`crate::export`]).
+    pub export: crate::export::Exporting,
 }
 
 impl App {
@@ -437,6 +443,12 @@ pub enum Action {
     Song(stage::Command),
     /// The browser's Songs tab: play, star, a folder, the touch-ups.
     Songs(SongAction),
+    /// Recording: start, stop, its options ([`crate::record`]).
+    Record(crate::record::Do),
+    /// Practice with these hands, or not at all ([`crate::practice`]).
+    Practice(crate::practice::Hands),
+    /// Export the song, or cancel the export ([`crate::export`]).
+    Export(crate::export::Do),
     Star(usize, bool),
     AddFolder,
     /// New parts take the next free MIDI channel; their own output pair.
@@ -756,6 +768,30 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         bar.push(songs::chord_label(s, &app.songbook));
     }
     bar.push(spacer());
+    // Record, Export and Practice ([`crate::record`], [`crate::export`],
+    // [`crate::practice`]).
+    let mut record = Vec::new();
+    bar.push(crate::record::control(
+        ui,
+        &mut v.menu,
+        &app.record,
+        &mut record,
+    ));
+    out.extend(record.into_iter().map(Action::Record));
+    let mut export = Vec::new();
+    bar.push(crate::export::control(
+        ui,
+        &mut v.menu,
+        &app.export,
+        &mut export,
+    ));
+    out.extend(export.into_iter().map(Action::Export));
+    let practice = crate::practice::control(ui, &mut v.menu, &app.practice);
+    if let Some(hands) = practice.changed {
+        app.practice.hands = hands;
+        out.push(Action::Practice(hands));
+    }
+    bar.push(practice.el);
     if song.is_some() {
         if falls {
             bar.push(design_picker(ui, v));
@@ -851,15 +887,29 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     let bed = keyboard::keyboard(ui, "keybed", &shown, &mut app.view.playing, height);
     out.extend(bed.changed.into_iter().map(|(n, on)| Action::Note(n, on)));
+    // Practice marks the keys to press over the notes and the keys.
+    let marks = falls && app.practice.marks();
     // The notes fall in a lane as wide as the keybed, right above it, so
     // each lands on its key; the wheels sit beside the keys alone.
     let mut keys = Vec::new();
     if tall > 0.5 {
         let (notes, at) = song.map_or_else(Default::default, |s| (s.notes.clone(), s.position));
         let look = design::named(&app.view.design);
-        keys.push(waterfall::waterfall_in(&notes, at, range, tall, look).id("song-falling"));
+        let lane = waterfall::waterfall_in(&notes, at, range, tall, look).id("song-falling");
+        keys.push(if marks {
+            let over = crate::practice::lane(&app.practice, range, tall);
+            stack![lane, over].w(Len::Pct(100.))
+        } else {
+            lane
+        });
     }
-    keys.push(bed.el.grow(0).w(Len::Pct(100.)));
+    let bed = bed.el.grow(0).w(Len::Pct(100.));
+    keys.push(if marks {
+        let over = crate::practice::keys(&app.practice, range, height);
+        stack![bed, over].w(Len::Pct(100.))
+    } else {
+        bed
+    });
     col![
         bar,
         row![bend.el, wheel.el, col(keys).grow(1).w(0.).min_w(TEXT * 20.)]

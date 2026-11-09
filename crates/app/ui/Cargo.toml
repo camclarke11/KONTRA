@@ -12,7 +12,9 @@ workspace = true
 kontra-protocol = { path = "../../model/protocol" }
 kontra-ui-model = { path = "../../model/ui-model" }
 kontra-ui-pictures = { path = "../ui-pictures" }
-mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+# `cpu`: a song's video is drawn headless (export.rs), as the plugin's
+# software window already builds it.
+mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }
 serde = { workspace = true }
 toml = { workspace = true }
 # Only for `examples/song_gpu.rs`: vello's GPU renderer and a backend to run it.
