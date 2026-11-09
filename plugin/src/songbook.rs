@@ -235,9 +235,44 @@ impl Songbook {
                     self.changed();
                 }
             }
-            SongAction::Play(_) | SongAction::AddFolder(None) => {}
+            // Carried out by the tick, which reports what goes wrong ([`Songbook::trash`]).
+            SongAction::Play(_) | SongAction::AddFolder(None) | SongAction::Trash(_) => {}
         }
         None
+    }
+
+    /// Moves the song at `path`, one the tab lists, to the system's Trash
+    /// (from which the Finder can put it back): stopped first if it plays,
+    /// and gone from the favourites and the recent songs.
+    ///
+    /// # Errors
+    /// When it is not a song the tab lists, or cannot be moved.
+    pub fn trash(&mut self, songs: &Songs, path: &Path) -> Result<(), String> {
+        self.trash_with(songs, path, |p| trash::delete(p).map_err(|e| e.to_string()))
+    }
+
+    /// [`Songbook::trash`], moving the file with `remove`.
+    fn trash_with(
+        &mut self,
+        songs: &Songs,
+        path: &Path,
+        remove: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !self.found.iter().any(|f| f.path == path) {
+            return Err("it is not a song in the Songs tab".into());
+        }
+        if songs.path().as_deref() == Some(path) {
+            songs.stop();
+        }
+        remove(path)?;
+        self.prefs.star(path, false);
+        self.prefs.recent.retain(|p| p != path);
+        self.found.retain(|f| f.path != path);
+        if self.played.as_ref().is_some_and(|p| p.0 == path) {
+            self.played = None;
+        }
+        self.changed();
+        Ok(())
     }
 
     /// Whether a recording's piano is isolated before it is transcribed.
@@ -603,6 +638,42 @@ mod tests {
                 velocity: false
             }
         );
+    }
+
+    /// A song deleted from the tab: stopped if it plays, its file moved
+    /// away (to the Trash, in the app), gone from the list, the favourites
+    /// and the recent songs. Only a song the tab lists can be.
+    #[test]
+    fn a_song_deleted_goes_from_the_list_and_its_file_with_it() {
+        let s = Scratch::new("trash");
+        let folder = s.0.join("Transcriptions");
+        std::fs::create_dir_all(&folder).unwrap();
+        let (bad, good) = (folder.join("bad take.mid"), folder.join("good take.mid"));
+        std::fs::write(&bad, song()).unwrap();
+        std::fs::write(&good, song()).unwrap();
+        let mut book = Songbook::open(Some(s.0.join("songs.json")), None);
+        book.add_folder(folder.clone());
+        settle(&mut book);
+        let songs = Songs::default();
+        book.play(&songs, &bad).unwrap();
+        book.act(SongAction::Star(bad.clone(), true), &songs);
+        assert!(songs.status().is_some(), "it plays");
+        let gone = |p: &Path| std::fs::remove_file(p).map_err(|e| e.to_string());
+        book.trash_with(&songs, &bad, gone).unwrap();
+        assert!(!bad.exists() && good.exists());
+        assert!(songs.status().is_none(), "stopped");
+        let v = book.view();
+        let names: Vec<&str> = v.songs.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["good take"]);
+        assert!(v.recent.is_empty() && v.songs.iter().all(|s| !s.starred));
+        // Read again, it stays gone; and nothing outside the tab is touched.
+        book.rescan();
+        settle(&mut book);
+        assert_eq!(book.view().songs.len(), 1);
+        let elsewhere = s.0.join("elsewhere.mid");
+        std::fs::write(&elsewhere, song()).unwrap();
+        assert!(book.trash_with(&songs, &elsewhere, gone).is_err());
+        assert!(elsewhere.exists());
     }
 
     #[test]

@@ -106,6 +106,9 @@ pub struct SongView {
     pub search: String,
     /// Folders folded shut, by their heading.
     pub folded: Vec<String>,
+    /// The song whose × was clicked, asking "Delete?" until it is clicked
+    /// again or the pointer leaves it.
+    pub trashing: Option<PathBuf>,
 }
 
 /// Which songs the tab lists.
@@ -132,6 +135,8 @@ pub enum SongAction {
     Rescan,
     /// Transcribe a recording's piano alone (true), or all of it.
     Isolate(bool),
+    /// Move this song's file to the Trash.
+    Trash(PathBuf),
 }
 
 /// The song last read by the Songs tab, if it is `song`.
@@ -296,11 +301,18 @@ fn list(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let mut star = None;
     let mut fold = None;
     let mut remove = None;
+    let trashing = v.trashing.clone();
+    // The song asking "Delete?" after this frame, if any.
+    let mut asking = None;
     let mut row_of = |ui: &mut Ui, n: usize, song: &SongFile, rows: &mut Vec<El>| {
         let on = playing.as_ref() == Some(&song.path);
-        let (el, starred) = song_row(ui, n, song, on, out);
-        if starred {
-            star = Some(n);
+        let pending = trashing.as_ref() == Some(&song.path);
+        let (el, ask) = song_row(ui, n, song, on, pending, out);
+        match ask {
+            Some(Ask::Star) => star = Some(n),
+            Some(Ask::Trash) => asking = Some(song.path.clone()),
+            Some(Ask::Keep) if pending => asking = Some(song.path.clone()),
+            _ => {}
         }
         rows.push(el);
     };
@@ -356,6 +368,7 @@ fn list(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             }
         }
     }
+    app.view.songs.trashing = asking;
     if let Some(n) = star
         && let Some(song) = app.songbook.songs.get_mut(n)
     {
@@ -474,16 +487,29 @@ fn folder_row(
     )
 }
 
+/// What a song's row asks of the list this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ask {
+    /// Its star was clicked.
+    Star,
+    /// Its × was clicked: ask "Delete?".
+    Trash,
+    /// It is asking "Delete?" and the pointer is still on it.
+    Keep,
+}
+
 /// A song: its name, length and tracks, and its star; raised with an
-/// accent edge while it plays. A click plays it. Whether its star was
-/// clicked this frame.
+/// accent edge while it plays. A click plays it. Under the pointer it
+/// shows a ×, which asks "Delete?" (`pending`), and that, clicked, moves
+/// its file to the Trash.
 fn song_row(
     ui: &mut Ui,
     n: usize,
     song: &SongFile,
     playing: bool,
+    pending: bool,
     out: &mut Vec<Action>,
-) -> (El, bool) {
+) -> (El, Option<Ask>) {
     let id = format!("song-{n}");
     if ui.get(id.clone()).activated() && song.problem.is_none() {
         out.push(Action::Songs(SongAction::Play(song.path.clone())));
@@ -556,8 +582,40 @@ fn song_row(
         },
         song.starred,
     );
-    let line = row![el, star.el].align(Align::Center).w(Len::Pct(100.));
-    (line, star.changed)
+    let trash_id = format!("song-trash-{n}");
+    let over = |ui: &Ui, id: &str| ui.state(id.to_owned()).hover > 0.05;
+    let near = over(ui, &format!("song-{n}"))
+        || over(ui, &trash_id)
+        || over(ui, &format!("song-star-{n}"));
+    let mut ask = star.changed.then_some(Ask::Star);
+    let trash = if pending {
+        let delete = kit::button(ui, trash_id, "Delete?", true);
+        if delete.changed {
+            out.push(Action::Songs(SongAction::Trash(song.path.clone())));
+        } else if near {
+            ask = ask.or(Some(Ask::Keep));
+        }
+        Some(
+            delete
+                .el
+                .tip("Move this MIDI file to the Trash (Finder can put it back)"),
+        )
+    } else if near {
+        let x = icon_button(ui, trash_id, Icon::Close, "Delete this song…", false);
+        if x.changed {
+            ask = Some(Ask::Trash);
+        }
+        Some(x.el)
+    } else {
+        None
+    };
+    let line = row(std::iter::once(el)
+        .chain(trash)
+        .chain([star.el])
+        .collect::<Vec<_>>())
+    .align(Align::Center)
+    .w(Len::Pct(100.));
+    (line, ask)
 }
 
 /// The touch-ups: a line on what they did to the song playing beside

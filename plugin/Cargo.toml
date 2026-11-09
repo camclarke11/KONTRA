@@ -26,6 +26,8 @@ kontra-ui-model = { path = "../crates/model/ui-model" }
 dirs = "5"
 kontra-library = { path = "../crates/app/library" }
 kontra-transcribe = { path = "../crates/app/transcribe" }
+# The Songs tab's "Delete?": a song's file to the system's Trash.
+trash = "5"
 moose = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", default-features = false, features = ["mui"] }
 moose-clap = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", features = ["mpe-input"], optional = true }
 moose-vst3 = { git = "https://github.com/Matari-Audio/moose", rev = "bffa4677d0b82119d38566ce7e932dc5c463d497", optional = true }

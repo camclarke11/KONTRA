@@ -310,6 +310,11 @@ impl BackgroundTask for Tick {
                 Request::AddRoot(path) if songbook::holds_songs(&path) => book.add_folder(path),
                 Request::AddRoot(path) => browser.add_root(path),
                 Request::Song(path) => play_song(p, book, &path, &mut report),
+                Request::Songbook(kontra_ui::app::SongAction::Trash(path)) => {
+                    if let Err(e) = book.trash(&p.shared.song, &path) {
+                        report.push(format!("{}: not moved to the Trash: {e}", path.display()));
+                    }
+                }
                 Request::Songbook(action) => {
                     if let Some(again) = book.act(action, &p.shared.song) {
                         // Plays on from where it was, as touched now.

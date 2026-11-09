@@ -13,7 +13,7 @@ use kontra_ui::app::{
     self, App, Format, Part, Played, Song, SongFile, SongFolder, Songbook, Touch,
 };
 use kontra_ui::waterfall::{Note, Notes};
-use mui::prelude::{Input, Size, Ui};
+use mui::prelude::{Input, Point, PointerInput, Size, Ui};
 use mui::vello;
 
 /// Seconds a beat lasts.
@@ -166,10 +166,27 @@ fn editor() -> App {
 }
 
 fn frame(ui: &mut Ui, app: &mut App, size: (u16, u16)) -> Result<bool, Box<dyn Error>> {
+    frame_at(ui, app, size, None)
+}
+
+/// A frame with the pointer at `at`, if anywhere.
+fn frame_at(
+    ui: &mut Ui,
+    app: &mut App,
+    size: (u16, u16),
+    at: Option<Point>,
+) -> Result<bool, Box<dyn Error>> {
     let r = app::view(ui, app);
     let size = Size::new(f64::from(size.0), f64::from(size.1));
+    let input = Input {
+        pointer: PointerInput {
+            pos: at,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     let f = ui
-        .frame(r.el, Some(size), Input::default(), 1. / 60.)
+        .frame(r.el, Some(size), input, 1. / 60.)
         .map_err(|e| format!("{e:?}"))?;
     Ok(f.animating)
 }
@@ -231,6 +248,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             app.transcribe = t;
             for _ in 0..30 {
                 frame(&mut ui, &mut app, size)?;
+            }
+            let path = out.join(format!("songs-{w}-{state}.png"));
+            save(&path, w, h, &paint(&ui, w, h)?)?;
+            println!("{{\"width\":{w},\"state\":{state:?},\"shot\":{path:?}}}");
+        }
+        // A song under the pointer shows its ×; one asked about, "Delete?".
+        for (state, ask) in [("hover", false), ("delete", true)] {
+            let row = ui
+                .scene()
+                .and_then(|s| s.surface("song-1"))
+                .map(|s| Point::new(s.frame.x + 40., s.frame.y + s.frame.size.height / 2.));
+            if ask {
+                app.view.songs.trashing = app.songbook.songs.get(1).map(|s| s.path.clone());
+            }
+            for _ in 0..30 {
+                frame_at(&mut ui, &mut app, size, row)?;
             }
             let path = out.join(format!("songs-{w}-{state}.png"));
             save(&path, w, h, &paint(&ui, w, h)?)?;

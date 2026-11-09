@@ -371,3 +371,85 @@ fn a_recording_is_transcribed_from_the_songs_tab() {
         Some("Made Nocturne take.mid")
     );
 }
+
+/// Frames with the pointer at `at` (pressed or not) until nothing moves.
+fn hold(ui: &mut Ui, app: &mut App, at: Point, buttons: Buttons) -> Vec<Action> {
+    let mut out = Vec::new();
+    for _ in 0..120 {
+        let pointer = PointerInput {
+            pos: Some(at),
+            buttons,
+            ..Default::default()
+        };
+        let input = Input {
+            pointer,
+            ..Default::default()
+        };
+        let (actions, moving) = frame(ui, app, input);
+        out.extend(actions);
+        if !moving && buttons == Buttons::default() {
+            break;
+        }
+        if buttons != Buttons::default() {
+            break;
+        }
+    }
+    out
+}
+
+fn centre(ui: &Ui, id: &str) -> Option<Point> {
+    let s = ui.scene()?.surface(id)?.frame;
+    Some(Point::new(
+        s.x + s.size.width / 2.,
+        s.y + s.size.height / 2.,
+    ))
+}
+
+/// A click on `id` with the pointer left on it, as a mouse leaves it.
+fn click_staying(ui: &mut Ui, app: &mut App, id: &str) -> Vec<Action> {
+    let at = centre(ui, id);
+    assert!(at.is_some(), "no {id} on screen");
+    let Some(at) = at else {
+        return Vec::new();
+    };
+    let mut out = hold(ui, app, at, Buttons::PRIMARY);
+    out.extend(hold(ui, app, at, Buttons::default()));
+    out
+}
+
+/// A song's × shows under the pointer; clicked, it asks "Delete?"; that,
+/// clicked, asks for the file to go to the Trash. The pointer leaving it
+/// takes the question back.
+#[test]
+fn a_song_is_deleted_by_its_x_then_delete() {
+    let mut ui = kontra_ui::ui();
+    let mut app = editor();
+    app.view.format = Format::Songs;
+    settle(&mut ui, &mut app);
+    let path = app.songbook.songs[0].path.clone();
+    assert!(!shown(&ui, "song-trash-0"), "only under the pointer");
+    let row = centre(&ui, "song-0").unwrap();
+    hold(&mut ui, &mut app, row, Buttons::default());
+    assert!(shown(&ui, "song-trash-0"));
+    assert!(!shown(&ui, "song-trash-1"), "not on the others");
+    assert!(
+        click_staying(&mut ui, &mut app, "song-trash-0").is_empty(),
+        "it asks first"
+    );
+    assert_eq!(app.view.songs.trashing.as_ref(), Some(&path));
+    assert_eq!(
+        click_staying(&mut ui, &mut app, "song-trash-0"),
+        [Action::Songs(SongAction::Trash(path.clone()))]
+    );
+    // Asked again, then left: the question goes.
+    click_staying(&mut ui, &mut app, "song-trash-0");
+    assert_eq!(app.view.songs.trashing.as_ref(), Some(&path));
+    hold(
+        &mut ui,
+        &mut app,
+        Point::new(900., 400.),
+        Buttons::default(),
+    );
+    assert_eq!(app.view.songs.trashing, None);
+    assert!(!shown(&ui, "song-trash-0"));
+}
