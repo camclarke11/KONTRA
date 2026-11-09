@@ -120,13 +120,101 @@ fn clicks_drive_the_editor_and_idle_costs_no_frames() {
     );
 }
 
-/// "Play MIDI" asks for a file; while a song plays, the header shows it and
-/// its Stop stops it.
+/// An empty editor says what to do first, with the button that does it:
+/// add the folder the libraries are in; with libraries, pick one (and
+/// show the browser to pick from); with no songs, add a folder of them.
+#[test]
+fn an_empty_editor_says_what_to_do_first() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        click(&mut ui, &mut app, "rack-add-folder"),
+        [Action::AddFolder]
+    );
+    assert_eq!(
+        click(&mut ui, &mut app, "browser-empty-add"),
+        [Action::AddFolder]
+    );
+    app.libraries = vec![Library {
+        name: "Una Corda".into(),
+        format: Format::Kontakt,
+        presets: vec!["Cotton".into()],
+        starred: false,
+        art: Vec::new(),
+    }];
+    app.view.browser_hidden = true;
+    settle(&mut ui, &mut app);
+    let shown = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).is_some();
+    assert!(!shown(&ui, "rack-add-folder"));
+    assert!(click(&mut ui, &mut app, "rack-show-browser").is_empty());
+    assert!(!app.view.browser_hidden);
+    assert!(!shown(&ui, "rack-show-browser"), "the browser is there");
+    // The Falcon / UVI tab has none of them.
+    click(&mut ui, &mut app, "format-Falcon / UVI");
+    assert!(shown(&ui, "browser-empty-add"));
+    click(&mut ui, &mut app, "format-Songs");
+    assert_eq!(
+        click(&mut ui, &mut app, "songs-empty-add"),
+        [Action::Songs(app::SongAction::AddFolder(None))]
+    );
+}
+
+/// The settings, opened from the menu in the smallest window while notes
+/// rise over the keys, scroll inside the room there is: the keyboard stays
+/// in the window.
+#[test]
+fn the_settings_fit_a_small_window_and_leave_the_keyboard_in_it() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        folders: vec!["/Libraries".into()],
+        played: Played {
+            notes: Notes::new(vec![Note {
+                start: 0.5,
+                end: 1.0,
+                key: 60,
+                velocity: 100,
+                voice: 0,
+            }]),
+            at: 1.0,
+            begun: true,
+        },
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "app-menu");
+    click(&mut ui, &mut app, "app-menu-0");
+    assert_eq!(app.view.sheet, Some(app::Sheet::Settings));
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let bed = frame_of(&ui, "keybed").unwrap();
+    assert!(bed.y + bed.size.height <= 600.5, "{bed:?}");
+    let sheet = frame_of(&ui, "sheet").unwrap();
+    assert!(
+        sheet.y >= 0. && sheet.y + sheet.size.height <= bed.y,
+        "{sheet:?}"
+    );
+}
+
+/// "Play MIDI…" in the header asks for a file, and stays to pick another
+/// while one plays; the song's transport is the keyboard bar's, and its
+/// Stop stops it. However much is going on, a 900 pt window keeps every
+/// header control in view, giving up the load readouts first.
 #[test]
 fn the_header_plays_and_stops_a_midi_file() {
     let mut ui = kontra_ui::ui();
     let mut app = App::default();
     settle(&mut ui, &mut app);
+    // The first frame does not know the window's width yet; the next does.
+    settle(&mut ui, &mut app);
+    let in_view = |ui: &Ui, id: &str| {
+        let f = ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+        f.is_some_and(|f| f.x >= 0. && f.x + f.size.width <= 900.)
+    };
+    for id in ["song-play", "midi-thru", "panic", "app-menu", "stat-CPU"] {
+        assert!(in_view(&ui, id), "{id}");
+    }
+    assert!(!in_view(&ui, "stat-RAM"), "memory and disk need more room");
     assert_eq!(click(&mut ui, &mut app, "song-play"), [Action::PlaySong]);
     app.song = Some(app::Song {
         name: "Clair de Lune.mid".into(),
@@ -135,16 +223,41 @@ fn the_header_plays_and_stops_a_midi_file() {
         notes: Notes::default(),
         ..Default::default()
     });
+    app.export.song = Some("Clair de Lune.mid".into());
+    app.export.job = Some(("Exporting video".into(), 0.4));
+    app.report = vec!["a warning".into()];
     settle(&mut ui, &mut app);
-    let scene = ui.scene().unwrap();
-    assert!(scene.surface("song-play").is_none());
-    assert!(scene.surface("song").is_some());
-    // A 900 pt window keeps Panic in view beside the song's transport,
-    // giving up the load readouts for it.
-    let panic = scene.surface("panic").unwrap().frame;
-    assert!(panic.x + panic.size.width <= 900., "{panic:?}");
-    assert!(scene.surface("stat-RAM").is_none());
+    for id in [
+        "song-play",
+        "exporting",
+        "midi-thru",
+        "panic",
+        "warnings",
+        "app-menu",
+    ] {
+        assert!(in_view(&ui, id), "{id}");
+    }
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let bar = frame_of(&ui, "keys-bar").unwrap();
+    let stop = frame_of(&ui, "song-stop").unwrap();
+    assert!(
+        stop.y >= bar.y && stop.y + stop.size.height <= bar.y + bar.size.height,
+        "the transport is the keyboard bar's: {stop:?} {bar:?}"
+    );
     assert_eq!(click(&mut ui, &mut app, "song-stop"), [Action::StopSong]);
+}
+
+/// Picks `design` (by its index among the Designs) in the keyboard bar's
+/// notes dropdown, or Off with `None`.
+fn pick_notes(ui: &mut Ui, app: &mut App, design: Option<usize>) -> Vec<Action> {
+    let off = kontra_ui::design::all().len();
+    let mut out = click(ui, app, "song-notes");
+    out.extend(click(
+        ui,
+        app,
+        &format!("song-notes-{}", design.unwrap_or(off)),
+    ));
+    out
 }
 
 /// While a song plays its notes fall onto the keyboard in a lane exactly
@@ -191,14 +304,14 @@ fn a_playing_songs_notes_fall_onto_the_keys() {
     // The keybed follows the song, so its octave arrows wait.
     assert!(frame_of(&ui, "octave-up").is_none());
     assert!(
-        click(&mut ui, &mut app, "song-notes").is_empty(),
+        pick_notes(&mut ui, &mut app, None).is_empty(),
         "the editor's own"
     );
     assert!(app.view.notes_hidden);
     assert!(frame_of(&ui, "song-falling").is_none());
     assert!(frame_of(&ui, "octave-up").is_some());
     assert!(app.follows_song(), "its keys still light as they sound");
-    click(&mut ui, &mut app, "song-notes");
+    pick_notes(&mut ui, &mut app, Some(0));
     assert!(frame_of(&ui, "song-falling").is_some());
     assert!(frame_of(&ui, "octave-up").is_none());
     // The song ends: the keyboard as it was, and not a frame more.
@@ -250,12 +363,11 @@ fn what_the_player_plays_rises_from_the_keys() {
     assert!((lane.y + lane.size.height - bed.y).abs() < 0.5);
     assert!((bed.size.height - resting.size.height).abs() < 0.5);
     assert!(frame_of(&ui, "octave-up").is_none(), "a piano's keys");
-    assert!(frame_of(&ui, "song-design").is_some());
-    click(&mut ui, &mut app, "song-notes");
+    pick_notes(&mut ui, &mut app, None);
     assert!(app.view.notes_hidden);
     assert!(frame_of(&ui, "played-rising").is_none());
     assert!(frame_of(&ui, "octave-up").is_some());
-    click(&mut ui, &mut app, "song-notes");
+    pick_notes(&mut ui, &mut app, Some(0));
     assert!(frame_of(&ui, "played-rising").is_some());
     // A song: its notes fall in the lane instead.
     app.song = Some(app::Song {
@@ -274,15 +386,15 @@ fn what_the_player_plays_rises_from_the_keys() {
     assert!(frame_of(&ui, "played-rising").is_none());
 }
 
-/// While a song's notes fall, a dropdown beside "Notes" picks their
-/// Design; the pick is the editor's own, kept in its view.
+/// While a song's notes fall, the keyboard bar's notes dropdown picks
+/// their Design, or Off; the pick is the editor's own, kept in its view.
 #[test]
 fn the_falling_notes_take_the_design_picked() {
     let mut ui = kontra_ui::ui();
     let mut app = App::default();
     settle(&mut ui, &mut app);
     let shown = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).is_some();
-    assert!(!shown(&ui, "song-design"), "no song, no picker");
+    assert!(!shown(&ui, "song-notes"), "no notes, no picker");
     let note = Note {
         start: 0.5,
         end: 1.0,
@@ -298,16 +410,21 @@ fn the_falling_notes_take_the_design_picked() {
         ..Default::default()
     });
     settle(&mut ui, &mut app);
-    assert!(shown(&ui, "song-design"));
+    assert!(shown(&ui, "song-notes"));
     assert_eq!(app.view.design, "", "the default until one is picked");
-    assert!(click(&mut ui, &mut app, "song-design").is_empty());
-    assert!(shown(&ui, "song-design-2"), "the menu lists the Designs");
-    assert!(click(&mut ui, &mut app, "song-design-2").is_empty());
+    assert!(click(&mut ui, &mut app, "song-notes").is_empty());
+    assert!(shown(&ui, "song-notes-2"), "the menu lists the Designs");
+    assert!(click(&mut ui, &mut app, "song-notes-2").is_empty());
     assert_eq!(app.view.design, "Ivory");
-    assert!(!shown(&ui, "song-design-2"), "the pick closes the menu");
-    // Hidden notes need no Design.
-    click(&mut ui, &mut app, "song-notes");
-    assert!(!shown(&ui, "song-design"));
+    assert!(!shown(&ui, "song-notes-2"), "the pick closes the menu");
+    // Off hides them, and keeps the Design for when they are back.
+    pick_notes(&mut ui, &mut app, None);
+    assert!(app.view.notes_hidden && !shown(&ui, "song-falling"));
+    assert_eq!(app.view.design, "Ivory");
+    assert!(shown(&ui, "song-notes"), "to bring them back");
+    pick_notes(&mut ui, &mut app, Some(2));
+    assert!(!app.view.notes_hidden && shown(&ui, "song-falling"));
+    assert_eq!(app.view.design, "Ivory");
 }
 
 #[test]
@@ -713,11 +830,15 @@ fn point(
 }
 
 #[test]
-fn the_headers_transport_plays_pauses_seeks_and_sets_the_song() {
+fn the_keyboard_bars_transport_plays_pauses_seeks_and_sets_the_song() {
     let mut ui = kontra_ui::ui();
     let mut app = loaded();
     settle(&mut ui, &mut app);
-    assert!(on_screen(&ui, "song") && on_screen(&ui, "song-seek"));
+    assert!(on_screen(&ui, "keys-bar") && on_screen(&ui, "song-seek"));
+    assert!(
+        !on_screen(&ui, "keys-range"),
+        "the song's transport instead"
+    );
     assert_eq!(
         commands(click(&mut ui, &mut app, "song-pause")),
         [Command::Pause]
@@ -779,8 +900,36 @@ fn the_headers_transport_plays_pauses_seeks_and_sets_the_song() {
     );
 }
 
+/// Folded, the keyboard strip keeps its bar: the song's transport stays
+/// (its clock woken each second, with no frame following the song), and
+/// the same place brings the keys back.
+#[test]
+fn a_folded_keyboard_keeps_its_bar_and_the_songs_transport() {
+    let mut ui = kontra_ui::ui();
+    let mut app = loaded();
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "keys-fold");
+    assert!(app.view.keyboard_hidden);
+    assert!(!on_screen(&ui, "keybed") && !on_screen(&ui, "song-falling"));
+    assert!(on_screen(&ui, "song-pause") && on_screen(&ui, "song-seek"));
+    assert!(!app.follows_song(), "no frame every refresh");
+    let (_, wake, _) = point(&mut ui, &mut app, Point::new(600., 250.), false, false);
+    let wake = wake.map(|w| w.as_secs_f64()).unwrap_or_default();
+    assert!(wake > 0. && wake <= 1.1, "{wake}");
+    // Paused, the clock stands: once any tooltip under the pointer has
+    // shown, nothing to wake for.
+    song_mut(&mut app).transport.paused = true;
+    let mut wake = None;
+    for _ in 0..90 {
+        wake = point(&mut ui, &mut app, Point::new(600., 250.), false, false).1;
+    }
+    assert_eq!(wake, None);
+    click(&mut ui, &mut app, "keys-fold");
+    assert!(!app.view.keyboard_hidden && on_screen(&ui, "keybed"));
+}
+
 /// The Stage fills the window with the falling notes and the keys; F or
-/// the header opens it, F, Escape or its close button closes it.
+/// the keyboard bar opens it, F, Escape or its close button closes it.
 #[test]
 fn the_stage_fills_the_window_and_opens_and_closes_by_its_keys() {
     let mut ui = kontra_ui::ui();
@@ -794,7 +943,7 @@ fn the_stage_fills_the_window_and_opens_and_closes_by_its_keys() {
     click(&mut ui, &mut app, "song-stage");
     assert!(app.view.stage.open);
     settle(&mut ui, &mut app);
-    for gone in ["song", "browser", "rack", "keybed", "tab-Rack"] {
+    for gone in ["keys-bar", "browser", "rack", "keybed", "tab-Rack"] {
         assert!(!on_screen(&ui, gone), "{gone} is hidden");
     }
     let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
@@ -810,7 +959,7 @@ fn the_stage_fills_the_window_and_opens_and_closes_by_its_keys() {
     assert!(stage::shortcut(&mut app, Shortcut::Leave, &mut out));
     assert!(!app.view.stage.open && out.is_empty());
     settle(&mut ui, &mut app);
-    assert!(on_screen(&ui, "song") && !on_screen(&ui, "stage"));
+    assert!(on_screen(&ui, "song-seek") && !on_screen(&ui, "stage"));
     // F opens and closes it.
     assert!(stage::shortcut(&mut app, Shortcut::Stage, &mut out));
     settle(&mut ui, &mut app);
@@ -836,6 +985,34 @@ fn the_stage_fills_the_window_and_opens_and_closes_by_its_keys() {
     app.song = None;
     settle(&mut ui, &mut app);
     assert!(!app.view.stage.open && !on_screen(&ui, "stage"));
+}
+
+/// Practice works on the Stage as in the editor: its transport picks the
+/// hands, and the keys to press are marked over the notes and the keys.
+#[test]
+fn the_stage_practises_as_the_editor_does() {
+    use kontra_ui::practice::{Hands, Practice};
+    let mut ui = kontra_ui::ui();
+    let mut app = loaded();
+    song_mut(&mut app).transport.paused = true;
+    let mut out = Vec::new();
+    stage::shortcut(&mut app, Shortcut::Stage, &mut out);
+    settle(&mut ui, &mut app);
+    assert!(!on_screen(&ui, "practice-lane"), "not practising");
+    click(&mut ui, &mut app, "practice");
+    assert_eq!(
+        click(&mut ui, &mut app, "practice-1"),
+        [Action::Practice(Hands::Right)]
+    );
+    app.practice = Practice {
+        hands: Hands::Right,
+        waiting: true,
+        want: vec![60],
+        struck: Vec::new(),
+        wrong: Vec::new(),
+    };
+    settle(&mut ui, &mut app);
+    assert!(on_screen(&ui, "stage") && on_screen(&ui, "practice-lane"));
 }
 
 /// The transport hides two seconds after the pointer last moved, woken by

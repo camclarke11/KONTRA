@@ -1,10 +1,11 @@
-//! Settings: the library folders, the interface's size, MIDI.
+//! Settings: the library folders, the interface's size and looks, MIDI,
+//! and where new parts listen and play.
 
 use mui::prelude::*;
 
 use super::{Action, App, FaceLook, SCALES};
 use crate::kit::{self, Icon, button, icon_button, latch, rule, section};
-use crate::theme::{SPACE, TIGHT};
+use crate::theme::{SPACE, TIGHT, secondary};
 
 /// The settings sheet's body.
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -114,28 +115,42 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         let name = caption(f.clone()).lines(1).min_w(0).grow(1).tip(f.clone());
         folders.push(row![name, remove.el].align(Align::Center));
     }
+    if folders.is_empty() {
+        folders.push(
+            caption("None yet: add the folder your libraries are in")
+                .fill(secondary())
+                .lines(1),
+        );
+    }
     let folders = col(folders)
         .gap(TIGHT)
         .align(Align::Stretch)
         .w(Len::Pct(100.));
     let line = |label: &str, control: El| {
-        row![body(label.to_owned()), spacer(), control].align(Align::Center)
+        row![body(label.to_owned()), spacer(), control]
+            .align(Align::Center)
+            .w(Len::Pct(100.))
     };
+    // Every title at the left edge, as the first is.
+    let title = |label: &str| row![section(label), spacer()].w(Len::Pct(100.));
     col![
         row![section("Library folders"), spacer(), rescan.el, add.el]
             .gap(SPACE)
-            .align(Align::Center),
+            .align(Align::Center)
+            .w(Len::Pct(100.)),
         folders,
         rule(),
-        section("Interface"),
+        title("Interface"),
         line("Size", size.el),
         line("Library view", face.el),
         line("Library look", look.el),
         rule(),
-        section("MIDI / Output"),
-        line("MIDI thru", thru.el),
-        line("New parts: next free channel", next.el),
-        line("New parts: own output", own.el),
+        title("MIDI"),
+        line("MIDI Out", thru.el),
+        rule(),
+        title("New parts"),
+        line("Listen on the next free channel", next.el),
+        line("Play into their own output", own.el),
     ]
     .gap(SPACE)
 }

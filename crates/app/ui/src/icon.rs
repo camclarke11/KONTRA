@@ -31,6 +31,10 @@ pub enum Icon {
     /// A song's transport: play, pause.
     Play,
     Pause,
+    /// A square: stop the song.
+    Stop,
+    /// Bars falling onto a line: the notes over the keys.
+    Notes,
     /// Corners pointing out: fill the screen; in: give it back.
     Expand,
     Contract,
@@ -166,6 +170,13 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
             Icon::Pause => vec![
                 shape(&[(4., 3.), (6.8, 3.), (6.8, 13.), (4., 13.)]),
                 shape(&[(9.2, 3.), (12., 3.), (12., 13.), (9.2, 13.)]),
+            ],
+            Icon::Stop => vec![shape(&[(4., 4.), (12., 4.), (12., 12.), (4., 12.)])],
+            Icon::Notes => vec![
+                shape(&[(3., 3.), (5.5, 3.), (5.5, 9.), (3., 9.)]),
+                shape(&[(6.75, 6.), (9.25, 6.), (9.25, 12.), (6.75, 12.)]),
+                shape(&[(10.5, 2.), (13., 2.), (13., 7.5), (10.5, 7.5)]),
+                line(&[(2., 13.75), (14., 13.75)], false),
             ],
             Icon::Expand => [
                 [(2.5, 6.), (2.5, 2.5), (6., 2.5)],

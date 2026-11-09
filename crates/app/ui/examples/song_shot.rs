@@ -184,8 +184,11 @@ fn shots(
     if !plain {
         return Ok(());
     }
-    // Hidden, then stopped: the keyboard eases back and the frames end.
+    // Hidden (the notes dropdown's Off, after the Designs), then stopped:
+    // the keyboard eases back and the frames end.
     ui_click(&mut ui, &mut app, size, "song-notes")?;
+    let off = format!("song-notes-{}", design::all().len());
+    ui_click(&mut ui, &mut app, size, &off)?;
     let (rgba, _) = paint(&ui, w, h, a.scale)?;
     save(
         &a.out.join(format!("song-{w}-notes-hidden.png")),

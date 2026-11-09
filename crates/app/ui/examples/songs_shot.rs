@@ -1,7 +1,6 @@
 //! The editor headless with the browser's Songs tab open, a folder of
 //! songs listed and one playing: its notes falling, the chord it sounds
-//! named in the keyboard bar, the touch-ups it got beside it and in the
-//! tab. The songbook and the song are made here (a layout check, not the
+//! named in the keyboard bar, the touch-ups it got in the tab. The songbook and the song are made here (a layout check, not the
 //! player's files): F#m, D, A and E broken over two beats each with a
 //! melody above, as a pedal rings them. Saves `<out>/songs-<w>-<at>.png`
 //! and prints the chord at each.

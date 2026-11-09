@@ -11,15 +11,16 @@
 //! The transport: play and pause, a seek bar (a click or a drag puts the
 //! song there; with Shift held, a drag marks a loop), the clock, speed,
 //! transpose, the loop's A and B, muted hands or tracks, the metronome and
-//! the count-in. The header carries the same, compact, its settings under
-//! a menu. Space plays and pauses, F opens and closes the Stage, Escape
-//! closes it ([`shortcut`]); the host routes those keys here.
+//! the count-in. The keyboard strip's bar carries the same while a song is
+//! loaded ([`crate::app`]), its settings under a menu. Space plays and
+//! pauses, F opens and closes the Stage, Escape closes it ([`shortcut`]);
+//! the host routes those keys here.
 
 use mui::prelude::*;
 
 use crate::app::{Action, App, Song};
 use crate::keyboard::{self, Keys};
-use crate::kit::{self, Icon, button, icon_button, latch, popup, section, vrule};
+use crate::kit::{self, Icon, icon_button, latch, section, vrule};
 use crate::theme::{CONTROL, INSET, SPACE, TEXT, TIGHT, hairline, lift, secondary};
 use crate::waterfall;
 
@@ -36,9 +37,6 @@ const SOON: f64 = 0.05;
 
 /// The shortest loop a Shift-drag on the seek bar marks, in seconds.
 const SHORTEST: f64 = 0.5;
-
-/// The window width from which the header names the song it plays.
-const WIDE: f64 = 1360.;
 
 /// A loaded song's transport, as the host fills it.
 #[derive(Clone, Debug, PartialEq)]
@@ -202,7 +200,7 @@ pub fn shortcut(app: &mut App, key: Shortcut, out: &mut Vec<Action>) -> bool {
     }
 }
 
-fn open(app: &mut App) {
+pub(crate) fn open(app: &mut App) {
     app.view.stage.open = true;
     app.view.stage.moved = None;
     app.view.menu = None;
@@ -217,7 +215,7 @@ fn leave(app: &mut App, out: &mut Vec<Action>) {
 }
 
 /// `seconds` as minutes and seconds: 2:05; a count-in reads 0:00.
-fn clock(seconds: f64) -> String {
+pub(crate) fn clock(seconds: f64) -> String {
     let s = seconds.max(0.) as u64;
     format!("{}:{:02}", s / 60, s % 60)
 }
@@ -261,7 +259,8 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     // The transport shows while the pointer moves, rests on it, drags a
     // seek bar, or the song waits; else it hides, a timed wake-up away.
     let rested = now - stage.moved.unwrap_or(now);
-    let held = t.paused || t.ended || stage.scrub.is_some() || on_bar;
+    // A menu of the transport's open holds it too.
+    let held = t.paused || t.ended || stage.scrub.is_some() || on_bar || app.view.menu.is_some();
     if !held && rested < HIDE {
         ui.repaint_in(HIDE - rested + 0.02);
     }
@@ -318,8 +317,20 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     })
     .h((size.height - bed).max(0.))
     .id("stage-falling");
+    let keybed = keybed.el.grow(0).w(Len::Pct(100.));
+    // Practising, the keys to press marked over the notes and the keys,
+    // as the keyboard strip marks them.
+    let (lane, keybed) = if app.practice.marks() {
+        let tall = (size.height - bed).max(0.);
+        (
+            stack![lane, crate::practice::lane(&app.practice, range, tall)].w(Len::Pct(100.)),
+            stack![keybed, crate::practice::keys(&app.practice, range, bed)].w(Len::Pct(100.)),
+        )
+    } else {
+        (lane, keybed)
+    };
     let mut layers = vec![
-        col![lane, keybed.el.grow(0).w(Len::Pct(100.))]
+        col![lane, keybed]
             .w(Len::Pct(100.))
             .h(Len::Pct(100.))
             .fill(Role::Field),
@@ -423,7 +434,13 @@ fn bar(ui: &mut Ui, app: &mut App, song: &Song, out: &mut Vec<Action>) -> El {
     .align(Align::Center)
     .w(Len::Pct(100.));
     let play = play_button(ui, "stage-play", t, out);
-    let mut controls = vec![play, vrule().h(CONTROL * 0.6)];
+    // Practice, as the keyboard strip offers it ([`crate::practice`]).
+    let practice = crate::practice::control(ui, &mut app.view.menu, &app.practice);
+    if let Some(hands) = practice.changed {
+        app.practice.hands = hands;
+        out.push(Action::Practice(hands));
+    }
+    let mut controls = vec![play, practice.el, vrule().h(CONTROL * 0.6)];
     for (n, group) in settings(ui, "stage", song, labels, out)
         .into_iter()
         .enumerate()
@@ -476,7 +493,7 @@ fn bar(ui: &mut Ui, app: &mut App, song: &Song, out: &mut Vec<Action>) -> El {
 }
 
 /// Play, or pause; at its end, play again.
-fn play_button(ui: &mut Ui, id: &str, t: &Transport, out: &mut Vec<Action>) -> El {
+pub(crate) fn play_button(ui: &mut Ui, id: &str, t: &Transport, out: &mut Vec<Action>) -> El {
     let play = t.paused || t.ended;
     let (icon, name) = match (play, t.ended) {
         (true, true) => (Icon::Play, "Play again (Space)"),
@@ -497,7 +514,7 @@ fn play_button(ui: &mut Ui, id: &str, t: &Transport, out: &mut Vec<Action>) -> E
 /// The song's timeline `w` by `h` (0 wide grows): a click or drag puts the
 /// song there; a drag begun with Shift marks a loop. It shows where the
 /// song is, how far it has played and its loop.
-fn seek(
+pub(crate) fn seek(
     ui: &mut Ui,
     id: &str,
     song: &Song,
@@ -612,7 +629,7 @@ fn mark_span(t: &Transport, length: f64) -> Option<(f64, f64)> {
 
 /// How a group of settings is labelled.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Labels {
+pub(crate) enum Labels {
     /// Unlabelled, where a row has no room: each control's tooltip names it.
     Hidden,
     /// Before its controls.
@@ -626,7 +643,7 @@ const LABELLED: f64 = 1100.;
 
 /// The transport's settings, a group each: speed, transpose, loop, mutes,
 /// metronome, count-in. Ids start with `place`.
-fn settings(
+pub(crate) fn settings(
     ui: &mut Ui,
     place: &str,
     song: &Song,
@@ -833,81 +850,6 @@ fn group(label: &str, labels: Labels, items: Vec<El>) -> El {
     };
     all.extend(items);
     row(all).gap(TIGHT).align(Align::Center).shrink(0)
-}
-
-/// The header's transport while a song is loaded: play or pause, its name,
-/// a seek bar and the clock, the Stage, the settings under a menu, Stop.
-pub fn compact(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let Some(song) = app.song.clone() else {
-        return spacer().w(0);
-    };
-    let t = &song.transport;
-    let play = play_button(ui, "song-pause", t, out);
-    let seek = seek(
-        ui,
-        "song-seek",
-        &song,
-        &mut app.view.stage.scrub,
-        out,
-        (TEXT * 6., CONTROL),
-    );
-    let shown = app
-        .view
-        .stage
-        .scrub
-        .filter(|s| !s.marking)
-        .map_or(song.position, |s| s.to);
-    let stage = icon_button(
-        ui,
-        "song-stage",
-        Icon::Expand,
-        "Stage: only the falling notes and the keyboard (F)",
-        false,
-    );
-    if stage.changed {
-        open(app);
-    }
-    let open_menu = app.view.menu.as_deref() == Some("song-more");
-    let more = icon_button(
-        ui,
-        "song-more",
-        Icon::More,
-        "Speed, loop, metronome…",
-        open_menu,
-    );
-    let stop = button(ui, "song-stop", "Stop", true);
-    if stop.changed {
-        out.push(Action::StopSong);
-    }
-    let mut items = vec![play];
-    // Its name where the header has room for it; its tooltip anywhere.
-    if app.width >= WIDE {
-        items.push(caption(song.name.clone()).lines(1).min_w(0).w(TEXT * 8.));
-    }
-    items.extend([
-        seek.tip(song.name.clone()),
-        caption(format!("{} / {}", clock(shown), clock(song.length))).reserve("00:00 / 00:00"),
-        stage.el,
-        more.el,
-        stop.el.tip("Stop the MIDI file"),
-    ]);
-    if kit::toggle(ui, &mut app.view.menu, "song-more", more.changed) {
-        let rows: Vec<El> = settings(ui, "song", &song, Labels::Column(TEXT * 6.5), out)
-            .into_iter()
-            .map(|g| g.h(CONTROL))
-            .collect();
-        // A float takes the room around its parent: it says its own height.
-        let tall = rows.len() as f64 * (CONTROL + TIGHT) + TIGHT * 2.;
-        items.push(popup(
-            "song-more",
-            col(rows).gap(TIGHT).pad(TIGHT).min_h(tall).w(TEXT * 25.),
-        ));
-    }
-    row(items)
-        .gap(TIGHT)
-        .align(Align::Center)
-        .shrink(0)
-        .id("song")
 }
 
 #[cfg(test)]
