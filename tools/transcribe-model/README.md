@@ -36,3 +36,32 @@ pipeline found the same notes (F1 0.993 against PyTorch's, velocities
 within 1 on average) and scored as PyTorch does against the MIDI itself
 (onset within 50 ms: precision 0.89, recall 0.99). On an M5 Pro it
 transcribes a minute of audio in about 4.5 s on four threads.
+
+## Cleaning up what a voice leaves
+
+With the piano isolated from a song, what is left of the voice still makes
+the model hear an onset now and then: mostly a key "struck" that then never
+sounds (a note of 10 ms on the falling notes), or a key already ringing
+"struck again" weakly, cutting a held note in two. `post.rs` takes neither
+for a note (`GHOST`, `RESTRIKE`). `tune/` measured them, on 2026-11-09:
+three recordings from MAESTRO v3's test split (Chopin's Nocturne Op. 15
+No. 2, Debussy's "Des pas sur la neige", Rachmaninoff's Prelude Op. 32
+No. 12; CC BY-NC-SA 4.0, not in this repository), each with a singer's
+voice mixed over it as loud as the piano, isolated, transcribed, and scored
+against their true notes (onset within 50 ms, same key):
+
+| | false notes | true notes missed (of 3127) |
+| --- | --- | --- |
+| the authors' post-processing | 147 | 152 |
+| with the clean-up | 99 | 179 |
+
+On the solo recordings, isolated: 33 → 25 false, 119 → 140 missed. On a
+seven-minute song with a voice (Jacob Collier's "Fix You", live), notes
+under 60 ms went from 155 to 14, and 2399 notes to 2134.
+
+```sh
+python tune/mix.py <vocals.wav> <the song's piano.wav> <out dir> <piece.wav>...   # voice over each
+# isolate each (tools/separate-model), then:
+python tune/dump.py piano-transcription.onnx <isolated.wav> <out.npz>              # the raw outputs
+python tune/score.py a.npz=a.midi,b.npz=b.midi 'ghost=0,restrike=0' 'ghost=0.3,restrike=0.4'
+```

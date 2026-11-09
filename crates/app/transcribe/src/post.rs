@@ -5,11 +5,15 @@
 //!
 //! An onset or offset is a peak of its regression over a threshold, the
 //! highest for a few frames either side, placed between frames by the
-//! slope either side of it. A note runs from its onset until its key's
-//! frame output fades or an offset comes (whichever the shape suggests),
-//! the next onset on its key, or six seconds. The pedal goes down where
-//! its frame output rises past a half and comes up at its offset or once
-//! it has faded for a tenth of a second.
+//! slope either side of it. Beyond the authors, two kinds of onset are no
+//! note: one on a silent key that then never sounds (a ghost, from a
+//! voice or what isolating the piano left of one), and a weak one on a
+//! key already sounding (the note going on, not struck again). A note
+//! runs from its onset until its key's frame output fades or an offset
+//! comes (whichever the shape suggests), the next onset on its key, or
+//! six seconds. The pedal goes down where its frame output rises past a
+//! half and comes up at its offset or once it has faded for a tenth of a
+//! second.
 
 use crate::{FPS, KEYS};
 
@@ -23,6 +27,14 @@ const PEDAL_OFFSET: f32 = 0.2;
 const PEDAL_FRAME: f32 = 0.5;
 /// The longest note, in frames: six seconds.
 const LONGEST: usize = 600;
+/// A silent key struck sounds: its frame output reaches this within
+/// [`LOOK`] frames (a tenth of a second), or the onset was a ghost.
+const GHOST: f32 = 0.3;
+const LOOK: usize = 10;
+/// A key sounding (its frame output this high in the three frames
+/// before) is struck again only by an onset over [`RESTRIKE`].
+const SOUNDING: f32 = 0.5;
+const RESTRIKE: f32 = 0.4;
 
 /// The first key the model hears: A0.
 const LOWEST: u8 = 21;
@@ -73,6 +85,30 @@ fn peaks(x: &[f32], threshold: f32, neighbour: usize) -> Vec<Option<f32>> {
         }
     }
     out
+}
+
+/// Of one key's onset `peaks`, those that strike it: on a silent key, it
+/// then sounds (`frame` reaches [`GHOST`]); on a sounding one, the `onset`
+/// is over [`RESTRIKE`]. On three recordings with a voice sung over them,
+/// their piano isolated (tools/transcribe-model/README.md), this took
+/// away a third of the false notes, for under a percent of the true ones;
+/// on a song, nearly all its notes under 60 ms.
+fn struck(peaks: Vec<Option<f32>>, onset: &[f32], frame: &[f32]) -> Vec<Option<f32>> {
+    let at = |n: usize| frame.get(n).copied().unwrap_or(0.);
+    let most = |from: usize, to: usize| (from..to).map(at).fold(0f32, f32::max);
+    peaks
+        .into_iter()
+        .enumerate()
+        .map(|(b, shift)| {
+            let shift = shift?;
+            let strikes = if most(b.saturating_sub(3), b) >= SOUNDING {
+                onset.get(b).is_some_and(|&o| o >= RESTRIKE)
+            } else {
+                most(b, b + LOOK) >= GHOST
+            };
+            strikes.then_some(shift)
+        })
+        .collect()
 }
 
 /// One key's notes: (onset frame, offset frame, onset shift, offset
@@ -175,9 +211,10 @@ pub fn transcription(outputs: &[Vec<f32>]) -> crate::Transcription {
     let time = |frame: usize, shift: f32| (frame as f64 + f64::from(shift)) / FPS;
     let mut notes = Vec::new();
     for key in 0..KEYS {
-        let on = peaks(&column(onset, key), ONSET, 2);
+        let (onsets, sounds) = (column(onset, key), column(frame, key));
+        let on = struck(peaks(&onsets, ONSET, 2), &onsets, &sounds);
         let off = peaks(&column(offset, key), OFFSET, 4);
-        let found = key_notes(&column(frame, key), &on, &off, &column(velocity, key));
+        let found = key_notes(&sounds, &on, &off, &column(velocity, key));
         for (b, f, s, e, v) in found {
             let start = time(b, s).max(0.);
             notes.push(crate::Note {
@@ -243,6 +280,33 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!((notes[0].0, notes[0].1), (5, 11));
         assert_eq!((notes[1].0, notes[1].1), (12, 20));
+    }
+
+    #[test]
+    fn a_ghost_is_no_note_nor_a_weak_strike_on_a_sounding_key() {
+        let n = 40;
+        let mut frame = vec![0f32; n];
+        let mut onset = vec![0f32; n];
+        let mut at = vec![None; n];
+        at[5] = Some(0.);
+        onset[5] = 0.9;
+        // Struck, but the key never sounds: a ghost.
+        assert_eq!(struck(at.clone(), &onset, &frame)[5], None);
+        for f in frame.iter_mut().take(30).skip(7) {
+            *f = 0.8;
+        }
+        assert_eq!(struck(at.clone(), &onset, &frame)[5], Some(0.));
+        // Struck again while it sounds: weakly, the note goes on.
+        at[15] = Some(0.1);
+        onset[15] = 0.35;
+        let on = struck(at.clone(), &onset, &frame);
+        assert_eq!(on[15], None);
+        let velocity = vec![0.5f32; n];
+        let notes = key_notes(&frame, &on, &vec![None; n], &velocity);
+        assert_eq!(notes.len(), 1, "one note, not cut in two");
+        // Firmly: a new note.
+        onset[15] = 0.7;
+        assert_eq!(struck(at, &onset, &frame)[15], Some(0.1));
     }
 
     #[test]
