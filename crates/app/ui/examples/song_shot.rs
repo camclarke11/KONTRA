@@ -1,78 +1,36 @@
 //! The editor headless while a song plays: its notes falling onto the
 //! keyboard, drawn at several moments of the song. Saves
 //! `<out>/song-<width>-<seconds>.png` and prints one JSON line per shot
-//! with what a frame costs while the song moves, and whether the editor
-//! still asks for frames. The song is made here, like the shared test file
+//! with what a frame costs while the song moves (`frame_us`: building,
+//! laying out and resolving the view; `paint_ms`: vello's CPU renderer
+//! drawing it), how many shapes it drew, and whether the editor still asks
+//! for frames. The song is made here, like the shared test file
 //! pedal-runs.mid: left-hand chords a bar long, right-hand sixteenth runs,
-//! velocities from 40 to 110, 120 BPM then 80.
-//! `cargo run --release -p kontra-ui --example song_shot -- <out>`
+//! velocities from 40 to 110, 120 BPM then 80, the pedal changed each bar.
+//!
+//! `cargo run --release -p kontra-ui --example song_shot -- <out>
+//!   [--design <name> | --designs] [--midi <file.mid>] [--at <s>,<s>,...]
+//!   [--stage <w>x<h>] [--scale <device scale>]`
+//!
+//! `--designs` draws every Design that ships; `--midi` a real file's notes
+//! and pedal instead of the made one; `--stage` the falling notes over a
+//! keybed filling a whole window of that size, as a full-screen view would
+//! (`stage-<w>x<h>-<design>-<seconds>.png`), with no editor around them.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
-use kontra_ui::app::{self, App, Part, Song};
-use kontra_ui::waterfall::{Note, Notes};
-use mui::prelude::{Input, Size, Ui};
+use kontra_ui::app::{self, App};
+use kontra_ui::design::{self, Design};
+use kontra_ui::waterfall::Notes;
+use mui::prelude::*;
 use mui::vello;
 
-/// Seconds a beat lasts at `bar`.
-fn beat(bar: usize) -> f64 {
-    if bar < 8 { 0.5 } else { 0.75 }
-}
-
-fn song() -> Notes {
-    let mut notes = Vec::new();
-    let chords: [[u8; 3]; 4] = [[48, 55, 64], [45, 52, 60], [41, 48, 57], [43, 50, 59]];
-    let scale = [72u8, 74, 76, 77, 79, 81, 83, 84];
-    let mut at = 0.;
-    for bar in 0..16 {
-        let b = beat(bar);
-        // The left hand: a chord held the bar, the pedal's job done by hand.
-        for &key in chords.get(bar % 4).into_iter().flatten() {
-            notes.push(Note {
-                start: at,
-                end: at + 4. * b - 0.02,
-                key,
-                velocity: 60,
-                voice: 1,
-            });
-        }
-        // The right hand: sixteenths up and back down, swelling.
-        for s in 0..16usize {
-            let step = if s < 8 { s } else { 15 - s };
-            let key = scale.get(step).copied().unwrap_or(72) + if bar % 2 == 1 { 12 } else { 0 };
-            notes.push(Note {
-                start: at + s as f64 * b / 4.,
-                end: at + (s + 1) as f64 * b / 4. - 0.015,
-                key: if s % 4 == 3 { key + 1 } else { key },
-                velocity: 40 + (70 * s / 15) as u8,
-                voice: 0,
-            });
-        }
-        at += 4. * b;
-    }
-    Notes::new(notes)
-}
-
-fn editor(notes: Notes) -> App {
-    App {
-        parts: vec![Part {
-            name: "Una Corda Cotton".into(),
-            library: "Una Corda".into(),
-            output: 1,
-            keys: (21, 108),
-            ..Part::default()
-        }],
-        song: Some(Song {
-            name: "pedal-runs.mid".into(),
-            position: 0.,
-            length: 40.,
-            notes,
-        }),
-        ..App::default()
-    }
-}
+#[path = "shared/song.rs"]
+mod song;
+use song::{editor, midi};
 
 /// One frame of `app` on `ui`; its cost in µs and whether motion runs on.
 fn frame(ui: &mut Ui, app: &mut App, size: (u16, u16)) -> Result<(u128, bool), Box<dyn Error>> {
@@ -85,72 +43,211 @@ fn frame(ui: &mut Ui, app: &mut App, size: (u16, u16)) -> Result<(u128, bool), B
     Ok((t.elapsed().as_micros(), f.animating))
 }
 
+struct Args {
+    out: PathBuf,
+    designs: Vec<Arc<Design>>,
+    midi: Option<PathBuf>,
+    at: Vec<f64>,
+    stage: Option<(u16, u16)>,
+    scale: f64,
+    /// Frames to time the editor over, then stop: for a profiler.
+    bench: Option<u32>,
+}
+
+fn args() -> Result<Args, Box<dyn Error>> {
+    let mut it = std::env::args().skip(1);
+    let mut a = Args {
+        out: PathBuf::new(),
+        designs: vec![design::named("")],
+        midi: None,
+        at: vec![0.0, 1.37, 4.9, 13.2, 21.05],
+        stage: None,
+        scale: 1.,
+        bench: None,
+    };
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--design" => a.designs = vec![design::named(&it.next().ok_or("--design <name>")?)],
+            "--designs" => a.designs = design::presets().to_vec(),
+            "--midi" => a.midi = Some(it.next().ok_or("--midi <file>")?.into()),
+            "--at" => {
+                let list = it.next().ok_or("--at <s>,<s>")?;
+                a.at = list.split(',').map(str::parse).collect::<Result<_, _>>()?;
+            }
+            "--stage" => {
+                let size = it.next().ok_or("--stage <w>x<h>")?;
+                let (w, h) = size.split_once('x').ok_or("--stage <w>x<h>")?;
+                a.stage = Some((w.parse()?, h.parse()?));
+            }
+            "--scale" => a.scale = it.next().ok_or("--scale <s>")?.parse()?,
+            "--bench" => a.bench = Some(it.next().ok_or("--bench <frames>")?.parse()?),
+            _ => a.out = arg.into(),
+        }
+    }
+    if a.out.as_os_str().is_empty() {
+        return Err("usage: song_shot <out dir> [options]".into());
+    }
+    Ok(a)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
-    let out = PathBuf::from(
-        std::env::args_os()
-            .nth(1)
-            .ok_or("usage: song_shot <out dir>")?,
-    );
-    std::fs::create_dir_all(&out)?;
-    let notes = song();
-    for size in [(1180u16, 780u16), (900, 600)] {
+    let a = args()?;
+    std::fs::create_dir_all(&a.out)?;
+    let (notes, name) = match &a.midi {
+        Some(file) => (
+            midi(&std::fs::read(file)?)?,
+            file.file_name()
+                .map_or("song.mid".into(), |n| n.to_string_lossy().into_owned()),
+        ),
+        None => (song::song(), "pedal-runs.mid".to_owned()),
+    };
+    if let Some(frames) = a.bench {
+        let d = a.designs.first().cloned().unwrap_or_default();
         let mut ui = kontra_ui::ui();
-        let mut app = editor(notes.clone());
-        // The keyboard eases open: let it settle.
-        for _ in 0..240 {
-            if !frame(&mut ui, &mut app, size)?.1 {
-                break;
+        let mut app = editor(notes.clone(), &name, &d.meta.name);
+        let mut costs = Vec::new();
+        for n in 0..frames {
+            if let Some(s) = app.song.as_mut() {
+                s.position = 2. + f64::from(n % 1200) / 60.;
             }
+            costs.push(frame(&mut ui, &mut app, (1180, 780))?.0);
         }
-        for at in [0.0, 1.37, 4.9, 13.2, 21.05] {
-            // A second of frames up to it, as a playing song moves.
-            let mut costs = Vec::new();
-            for n in (0..60).rev() {
-                if let Some(s) = app.song.as_mut() {
-                    s.position = (at - f64::from(n) / 60.).max(0.);
-                }
-                costs.push(frame(&mut ui, &mut app, size)?.0);
-            }
-            costs.sort_unstable();
-            let (w, h) = size;
-            let file = out.join(format!("song-{w}-{at:05.2}.png"));
-            save(&file, w, h, &paint(&ui, w, h)?)?;
-            println!(
-                "{{\"width\":{w},\"at\":{at},\"frame_us\":{},\"follows\":{},\"shot\":{file:?}}}",
-                costs.get(costs.len() / 2).copied().unwrap_or(0),
-                app.follows_song(),
-            );
-        }
-        // Hidden, then stopped: the keyboard eases back and the frames end.
-        ui_click(&mut ui, &mut app, size, "song-notes")?;
-        let (w, h) = size;
-        save(
-            &out.join(format!("song-{w}-notes-hidden.png")),
-            w,
-            h,
-            &paint(&ui, w, h)?,
-        )?;
-        app.song = None;
-        let mut settle = 0;
-        while frame(&mut ui, &mut app, size)?.1 && settle < 240 {
-            settle += 1;
-        }
-        save(
-            &out.join(format!("song-{w}-stopped.png")),
-            w,
-            h,
-            &paint(&ui, w, h)?,
-        )?;
+        costs.sort_unstable();
+        let at = |q: usize| costs.get(costs.len() * q / 100).copied().unwrap_or(0);
         println!(
-            "{{\"width\":{w},\"stopped\":true,\"settle_frames\":{settle},\"follows\":{}}}",
-            app.follows_song()
+            "{{\"bench\":{frames},\"p50_us\":{},\"p95_us\":{}}}",
+            at(50),
+            at(95)
+        );
+        return Ok(());
+    }
+    if let Some(size) = a.stage {
+        for d in &a.designs {
+            stage(&a, &notes, d, size)?;
+        }
+        return Ok(());
+    }
+    let one = a.designs.len() == 1 && a.designs.first().is_some_and(|d| **d == Design::default());
+    for size in [(1180u16, 780u16), (900, 600)] {
+        for d in &a.designs {
+            shots(&a, &notes, &name, d, size, one)?;
+        }
+    }
+    Ok(())
+}
+
+/// The editor at `size` in Design `d`, at each of the moments asked for;
+/// with the default alone, also with the notes hidden, then stopped.
+fn shots(
+    a: &Args,
+    notes: &Notes,
+    name: &str,
+    d: &Design,
+    size: (u16, u16),
+    plain: bool,
+) -> Result<(), Box<dyn Error>> {
+    let mut ui = kontra_ui::ui();
+    let mut app = editor(notes.clone(), name, &d.meta.name);
+    // The keyboard eases open: let it settle.
+    for _ in 0..240 {
+        if !frame(&mut ui, &mut app, size)?.1 {
+            break;
+        }
+    }
+    let (w, h) = size;
+    let tag = if plain {
+        String::new()
+    } else {
+        format!("{}-", d.meta.name.to_lowercase())
+    };
+    for &at in &a.at {
+        // A second of frames up to it, as a playing song moves.
+        let mut costs = Vec::new();
+        for n in (0..60).rev() {
+            if let Some(s) = app.song.as_mut() {
+                s.position = (at - f64::from(n) / 60.).max(0.);
+            }
+            costs.push(frame(&mut ui, &mut app, size)?.0);
+        }
+        costs.sort_unstable();
+        let file = a.out.join(format!("song-{w}-{tag}{at:05.2}.png"));
+        let (rgba, paint_ms) = paint(&ui, w, h, a.scale)?;
+        save(&file, w, h, a.scale, &rgba)?;
+        println!(
+            "{{\"width\":{w},\"design\":{:?},\"at\":{at},\"frame_us\":{},\"paint_ms\":{paint_ms:.1},\"shapes\":{},\"follows\":{},\"shot\":{file:?}}}",
+            d.meta.name,
+            costs.get(costs.len() / 2).copied().unwrap_or(0),
+            ui.scene().map_or(0, |s| s.paint.len()),
+            app.follows_song(),
+        );
+    }
+    if !plain {
+        return Ok(());
+    }
+    // Hidden, then stopped: the keyboard eases back and the frames end.
+    ui_click(&mut ui, &mut app, size, "song-notes")?;
+    let (rgba, _) = paint(&ui, w, h, a.scale)?;
+    save(
+        &a.out.join(format!("song-{w}-notes-hidden.png")),
+        w,
+        h,
+        a.scale,
+        &rgba,
+    )?;
+    app.song = None;
+    let mut settle = 0;
+    while frame(&mut ui, &mut app, size)?.1 && settle < 240 {
+        settle += 1;
+    }
+    let (rgba, _) = paint(&ui, w, h, a.scale)?;
+    save(
+        &a.out.join(format!("song-{w}-stopped.png")),
+        w,
+        h,
+        a.scale,
+        &rgba,
+    )?;
+    println!(
+        "{{\"width\":{w},\"stopped\":true,\"settle_frames\":{settle},\"follows\":{}}}",
+        app.follows_song()
+    );
+    Ok(())
+}
+
+/// The falling notes over a keybed, filling a window of `size` alone: what
+/// a full-screen view draws.
+fn stage(a: &Args, notes: &Notes, d: &Arc<Design>, size: (u16, u16)) -> Result<(), Box<dyn Error>> {
+    let mut ui = kontra_ui::ui();
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    for &at in &a.at {
+        let mut costs = Vec::new();
+        for n in (0..30).rev() {
+            let t = Instant::now();
+            let now = (at - f64::from(n) / 60.).max(0.);
+            let el = song::stage(&mut ui, notes, d, now, (w, h));
+            ui.frame(el, Some(Size::new(w, h)), Input::default(), 1. / 60.)
+                .map_err(|e| format!("{e:?}"))?;
+            costs.push(t.elapsed().as_micros());
+        }
+        costs.sort_unstable();
+        let (sw, sh) = size;
+        let file = a.out.join(format!(
+            "stage-{sw}x{sh}-{}-{at:05.2}.png",
+            d.meta.name.to_lowercase()
+        ));
+        let (rgba, paint_ms) = paint(&ui, sw, sh, a.scale)?;
+        save(&file, sw, sh, a.scale, &rgba)?;
+        println!(
+            "{{\"stage\":\"{sw}x{sh}\",\"design\":{:?},\"at\":{at},\"frame_us\":{},\"paint_ms\":{paint_ms:.1},\"shapes\":{},\"shot\":{file:?}}}",
+            d.meta.name,
+            costs.get(costs.len() / 2).copied().unwrap_or(0),
+            ui.scene().map_or(0, |s| s.paint.len()),
         );
     }
     Ok(())
 }
 
 fn ui_click(ui: &mut Ui, app: &mut App, size: (u16, u16), id: &str) -> Result<(), Box<dyn Error>> {
-    use mui::prelude::{Buttons, Point, PointerInput};
     let at = ui
         .scene()
         .and_then(|s| s.surface(id))
@@ -183,8 +280,12 @@ fn ui_click(ui: &mut Ui, app: &mut App, size: (u16, u16), id: &str) -> Result<()
     Ok(())
 }
 
-fn paint(ui: &Ui, w: u16, h: u16) -> Result<Vec<u8>, Box<dyn Error>> {
-    let mut ctx = vello::vello_cpu::RenderContext::new(w, h);
+/// The scene at `scale` device pixels a point, and how long vello's CPU
+/// renderer took.
+fn paint(ui: &Ui, w: u16, h: u16, scale: f64) -> Result<(Vec<u8>, f64), Box<dyn Error>> {
+    let (pw, ph) = device(w, h, scale);
+    let t = Instant::now();
+    let mut ctx = vello::vello_cpu::RenderContext::new(pw, ph);
     let mut resources = vello::vello_cpu::Resources::default();
     let scene = ui.scene().ok_or("no scene")?;
     let cpu = &mut vello::Cpu {
@@ -192,18 +293,27 @@ fn paint(ui: &Ui, w: u16, h: u16) -> Result<Vec<u8>, Box<dyn Error>> {
         resources: &mut resources,
         cache: &mut vello::Cache::default(),
     };
-    vello::paint(cpu, scene, vello::kurbo::Affine::IDENTITY).map_err(|e| format!("{e:?}"))?;
+    vello::paint(cpu, scene, vello::kurbo::Affine::scale(scale)).map_err(|e| format!("{e:?}"))?;
     ctx.flush();
-    let mut pix = vello::vello_cpu::Pixmap::new(w, h);
+    let mut pix = vello::vello_cpu::Pixmap::new(pw, ph);
     ctx.render(&mut pix, &mut resources);
-    Ok(pix
-        .take_unpremultiplied()
-        .iter()
-        .flat_map(|p| [p.r, p.g, p.b, p.a])
-        .collect())
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    Ok((
+        pix.take_unpremultiplied()
+            .iter()
+            .flat_map(|p| [p.r, p.g, p.b, p.a])
+            .collect(),
+        ms,
+    ))
 }
 
-fn save(file: &Path, w: u16, h: u16, rgba: &[u8]) -> Result<(), Box<dyn Error>> {
+fn device(w: u16, h: u16, scale: f64) -> (u16, u16) {
+    let at = |v: u16| (f64::from(v) * scale).round().clamp(1., 65_535.) as u16;
+    (at(w), at(h))
+}
+
+fn save(file: &Path, w: u16, h: u16, scale: f64, rgba: &[u8]) -> Result<(), Box<dyn Error>> {
+    let (w, h) = device(w, h, scale);
     let mut e = png::Encoder::new(
         std::io::BufWriter::new(std::fs::File::create(file)?),
         w.into(),

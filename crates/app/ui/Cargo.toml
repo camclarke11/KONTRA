@@ -13,6 +13,18 @@ kontra-protocol = { path = "../../model/protocol" }
 kontra-ui-model = { path = "../../model/ui-model" }
 kontra-ui-pictures = { path = "../ui-pictures" }
 mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a" }
+serde = { workspace = true }
+toml = { workspace = true }
+# Only for `examples/song_gpu.rs`: vello's GPU renderer and a backend to run it.
+wgpu = { version = "30", default-features = false, features = ["wgsl", "metal"], optional = true }
+
+[features]
+# The falling notes timed on the GPU (`--example song_gpu`).
+gpu-bench = ["mui/gpu-effects", "dep:wgpu"]
+
+[[example]]
+name = "song_gpu"
+required-features = ["gpu-bench"]
 
 [dev-dependencies]
 mui = { git = "https://github.com/Matari-Audio/MUI", rev = "dcf0796082feec053af1418e3a38a302ee61da0a", features = ["cpu"] }

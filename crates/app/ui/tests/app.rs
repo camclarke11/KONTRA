@@ -207,6 +207,41 @@ fn a_playing_songs_notes_fall_onto_the_keys() {
     );
 }
 
+/// While a song's notes fall, a dropdown beside "Notes" picks their
+/// Design; the pick is the editor's own, kept in its view.
+#[test]
+fn the_falling_notes_take_the_design_picked() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    let shown = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).is_some();
+    assert!(!shown(&ui, "song-design"), "no song, no picker");
+    let note = Note {
+        start: 0.5,
+        end: 1.0,
+        key: 60,
+        velocity: 100,
+        voice: 0,
+    };
+    app.song = Some(app::Song {
+        name: "one.mid".into(),
+        position: 0.6,
+        length: 2.0,
+        notes: Notes::new(vec![note]),
+    });
+    settle(&mut ui, &mut app);
+    assert!(shown(&ui, "song-design"));
+    assert_eq!(app.view.design, "", "the default until one is picked");
+    assert!(click(&mut ui, &mut app, "song-design").is_empty());
+    assert!(shown(&ui, "song-design-2"), "the menu lists the Designs");
+    assert!(click(&mut ui, &mut app, "song-design-2").is_empty());
+    assert_eq!(app.view.design, "Ivory");
+    assert!(!shown(&ui, "song-design-2"), "the pick closes the menu");
+    // Hidden notes need no Design.
+    click(&mut ui, &mut app, "song-notes");
+    assert!(!shown(&ui, "song-design"));
+}
+
 #[test]
 fn a_dragged_envelope_handle_sets_every_group() {
     let mut ui = kontra_ui::ui();

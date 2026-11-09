@@ -1,20 +1,30 @@
 //! A playing song's notes falling onto the keybed: each note a bar in its
 //! key's lane that reaches the keys as it sounds, a piano roll turned on
-//! its side. Drawn only while a song plays.
+//! its side. Drawn only while a song plays, from the song's time alone,
+//! so a paused song is a still picture and costs nothing.
 //!
-//! The look follows MIDIVisualizer (Simon Rodriguez, MIT; THIRD_PARTY.md):
-//! bars a little narrower than their key with softly rounded corners, a
-//! sharp's bar darker than a natural's, the keys a note sounds lit in its
-//! colour, and a halo where a sounding note meets the keys, brightest as
-//! it strikes. A louder note is lighter, as Magenta.js's waterfall
-//! (Apache-2.0) makes it more opaque.
+//! How it looks is a [`Design`] (crate::design). Back to front: the field
+//! (a gradient, soft light drifting with the song), the lanes, the
+//! sustain pedal's lane, light rising from each sounding key, a bloom
+//! around each sounding bar, the bars, the line they strike with a halo
+//! where each lands, sparks, and a vignette. Every length is a share of a
+//! key's width or of the view's height, so it scales with its rect.
+//!
+//! The bars and the strike's flash follow MIDIVisualizer (Simon
+//! Rodriguez, MIT): bars a little narrower than their key with rounded
+//! ends and a lit edge, a sharp's bar darker, a flash that is brightest as
+//! a note strikes. The halo's falloff, the strike line, a key's light
+//! fading after release and the sparks ([`crate::sparks`]) follow
+//! piano-viz (kyan0s, MIT OR Apache-2.0). Provenance: THIRD_PARTY.md.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mui::prelude::*;
 
+use crate::design::{self, Design, Shading};
 use crate::keyboard::{black, layout};
+use crate::sparks::{self, Ground, Spark};
 
 /// Seconds of the song above the keys: how soon a note shows before it
 /// sounds.
@@ -23,6 +33,9 @@ pub const AHEAD: f64 = 3.;
 /// The keybed's octaves while it follows a song, at the least: the width
 /// it has without one, so its keys keep their size.
 pub const OCTAVES: u8 = 7;
+
+/// Seconds a key's light takes to fade once its note ends (piano-viz).
+const RELEASE: f64 = 0.35;
 
 /// One note of a song.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,7 +51,104 @@ pub struct Note {
     pub voice: u8,
 }
 
-/// A song's notes in start order, shared without copying.
+/// The sustain pedal through a song: how far down it is from each moment
+/// on, 0 (up) to 1 (down), half-pedalling in between.
+#[derive(Clone, Debug, Default)]
+pub struct Pedal {
+    /// (seconds, depth) where the depth changes, in time order.
+    steps: Arc<[(f64, f32)]>,
+}
+
+impl Pedal {
+    /// From a song's sustain messages (CC64): (seconds, channel, value)
+    /// in time order. With pedals on several channels, the deepest shows.
+    #[must_use]
+    pub fn new(events: impl IntoIterator<Item = (f64, u8, u8)>) -> Self {
+        let mut held = [0u8; 16];
+        let mut steps: Vec<(f64, f32)> = Vec::new();
+        for (time, channel, value) in events {
+            if let Some(h) = held.get_mut(usize::from(channel & 15)) {
+                *h = value.min(127);
+            }
+            let depth = f32::from(held.iter().copied().max().unwrap_or(0)) / 127.;
+            if let Some(last) = steps.last_mut()
+                && last.0 >= time
+            {
+                last.1 = depth;
+            } else if steps.last().is_none_or(|last| last.1 != depth) {
+                steps.push((time, depth));
+            }
+        }
+        Self {
+            steps: steps.into(),
+        }
+    }
+
+    /// Whether it is never pressed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.steps.iter().all(|s| s.1 <= 0.)
+    }
+
+    /// How far down it is at `at` seconds.
+    #[must_use]
+    pub fn depth(&self, at: f64) -> f32 {
+        let after = self.steps.partition_point(|s| s.0 <= at);
+        after
+            .checked_sub(1)
+            .and_then(|i| self.steps.get(i))
+            .map_or(0., |s| s.1)
+    }
+
+    /// How far down it is from `from` to `to` seconds, as the corners of
+    /// a line through (seconds, depth). A pedal that moves in small steps
+    /// close together (a pianist's foot, sent continuously) slopes from
+    /// one to the next; one that jumps, holds, then jumps steps.
+    #[must_use]
+    pub fn profile(&self, from: f64, to: f64) -> Vec<(f64, f32)> {
+        /// Messages closer than this are one movement of the foot.
+        const GLIDE: f64 = 0.08;
+        let first = self.steps.partition_point(|s| s.0 <= from);
+        let mut held = self.depth(from);
+        let mut out = vec![(from, held)];
+        let mut before = first
+            .checked_sub(1)
+            .and_then(|i| self.steps.get(i))
+            .map(|s| s.0);
+        for &(t, depth) in self.steps.get(first..).unwrap_or_default() {
+            if t >= to {
+                break;
+            }
+            if before.is_none_or(|b| t - b >= GLIDE) {
+                out.push((t, held));
+            }
+            out.push((t, depth));
+            (held, before) = (depth, Some(t));
+        }
+        out.push((to, held));
+        out
+    }
+
+    /// The stretches from `from` to `to` seconds it is down, cut to that
+    /// window, in order: (start, end, depth).
+    pub fn down(&self, from: f64, to: f64) -> impl Iterator<Item = (f64, f64, f32)> + '_ {
+        let first = self
+            .steps
+            .partition_point(|s| s.0 <= from)
+            .saturating_sub(1);
+        let steps = self.steps.get(first..).unwrap_or_default();
+        steps
+            .iter()
+            .enumerate()
+            .map_while(move |(i, &(start, depth))| {
+                let end = steps.get(i + 1).map_or(f64::INFINITY, |s| s.0);
+                (start < to).then_some((start.max(from), end.min(to), depth))
+            })
+            .filter(|s| s.2 > 0. && s.1 > s.0)
+    }
+}
+
+/// A song's notes in start order, and its pedal, shared without copying.
 #[derive(Clone, Debug, Default)]
 pub struct Notes {
     notes: Arc<[Note]>,
@@ -47,6 +157,9 @@ pub struct Notes {
     longest: f64,
     /// The lowest and highest key played.
     keys: Option<(u8, u8)>,
+    /// How many voices play them.
+    voices: u8,
+    pedal: Pedal,
 }
 
 /// One song's notes are the same notes: compared by identity, not by
@@ -64,11 +177,27 @@ impl Notes {
         let longest = notes.iter().map(|n| n.end - n.start).fold(0., f64::max);
         let low = notes.iter().map(|n| n.key).min();
         let high = notes.iter().map(|n| n.key).max();
+        let voices = notes.iter().map(|n| n.voice).max();
         Self {
             notes: notes.into(),
             longest,
             keys: low.zip(high),
+            voices: voices.map_or(0, |v| v.saturating_add(1)),
+            pedal: Pedal::default(),
         }
+    }
+
+    /// These notes with the song's sustain pedal.
+    #[must_use]
+    pub fn with_pedal(mut self, pedal: Pedal) -> Self {
+        self.pedal = pedal;
+        self
+    }
+
+    /// The song's sustain pedal.
+    #[must_use]
+    pub fn pedal(&self) -> &Pedal {
+        &self.pedal
     }
 
     #[must_use]
@@ -87,9 +216,15 @@ impl Notes {
         self.keys
     }
 
+    /// Whether `design` colours these notes by hand: it asks to, and one
+    /// voice plays them all, as in most piano files.
+    fn by_hand(&self, design: &Design) -> bool {
+        design.notes.hands && self.voices <= 1
+    }
+
     /// The notes sounding at some moment from `from` to `to` seconds, in
     /// start order: those starting before `to` and ending after `from`.
-    pub fn between(&self, from: f64, to: f64) -> impl Iterator<Item = &Note> {
+    pub fn between(&self, from: f64, to: f64) -> impl DoubleEndedIterator<Item = &Note> {
         let first = self
             .notes
             .partition_point(|n| n.start < from - self.longest);
@@ -104,13 +239,20 @@ impl Notes {
         self.between(at, at + 1e-9).filter(move |n| n.start <= at)
     }
 
-    /// The keys sounding at `at`, each in its note's colour: the last
-    /// struck wins a key two voices hold.
+    /// The keys sounding at `at`, each in its note's colour by the default
+    /// Design: the last struck wins a key two voices hold.
     #[must_use]
     pub fn lit(&self, at: f64) -> Vec<(u8, Color)> {
+        self.lit_in(at, &design::named(""))
+    }
+
+    /// [`Notes::lit`] in `design`'s colours.
+    #[must_use]
+    pub fn lit_in(&self, at: f64, design: &Design) -> Vec<(u8, Color)> {
         let mut lit: Vec<(u8, Color)> = Vec::new();
+        let hands = self.by_hand(design);
         for n in self.sounding(at) {
-            let c = color(n.voice, 127, false);
+            let c = design.voice(voice(n, hands), 110, false);
             match lit.iter_mut().find(|k| k.0 == n.key) {
                 Some(k) => k.1 = c,
                 None => lit.push((n.key, c)),
@@ -134,40 +276,55 @@ pub fn fit((low, high): (u8, u8), least: u8) -> (u8, u8) {
     (at(start * 12), at((start + want) * 12 - 1))
 }
 
-/// The voices' hues, far apart, over again past the sixth: blue (the first
-/// part's), then teal, violet, cyan, magenta and green. None is amber,
-/// which reads as a warning, nor coral, the error colour, as a part's hue
-/// may be.
-const VOICES: [f32; 6] = [250., 165., 305., 205., 340., 135.];
-
-/// A note's colour: its voice's hue, lighter and fuller the harder it is
-/// played; a sharp's darker, as its key is.
+/// A note's colour by the default Design: its voice's colour, lighter the
+/// harder it is played; a sharp's darker, as its key is.
 #[must_use]
 pub fn color(voice: u8, velocity: u8, sharp: bool) -> Color {
-    let v = f32::from(velocity.min(127)) / 127.;
-    let lightness = 0.56 + 0.2 * v;
-    let lightness = if sharp { lightness * 0.84 } else { lightness };
-    let hue = VOICES
-        .get(usize::from(voice) % VOICES.len())
-        .copied()
-        .unwrap_or_default();
-    Color::oklch(lightness, 0.09 + 0.06 * v, hue)
+    design::presets()
+        .first()
+        .map_or(Color::oklch(0.7, 0.1, 250.), |d| {
+            d.voice(voice, velocity, sharp)
+        })
 }
 
-/// How far a bar runs on past the canvas's edges, out of sight: its
-/// rounded ends show only where the note itself starts and ends.
-const BLEED: f64 = 6.;
+/// A key lit by a sounding note, as the keybed paints it: brightest at
+/// the top, where the note strikes it, deepening towards the player.
+#[must_use]
+pub fn lit_key(c: Color, sharp: bool) -> Fill {
+    let tone = |l: f32, chroma: f32| c.with_lightness(l).scale_chroma(chroma);
+    let stops = if sharp {
+        [
+            (0., tone(0.8, 0.7)),
+            (0.3, tone(0.62, 1.)),
+            (1., tone(0.48, 1.)),
+        ]
+    } else {
+        [
+            (0., tone(0.96, 0.35)),
+            (0.22, tone(0.84, 0.8)),
+            (1., tone(0.72, 1.)),
+        ]
+    };
+    Gradient::linear(180., stops).into()
+}
+
+/// How far a bar runs on past the canvas's edges, out of sight, in key
+/// widths: its rounded ends show only where the note itself starts and
+/// ends.
+const BLEED: f64 = 0.5;
 
 /// A note's bar over a keybed `size` big showing `range`, `at` seconds into
-/// the song: (x, y, width, height), None when it is off the keybed or not
-/// in view. Time runs up the canvas, [`AHEAD`] seconds of it, the bottom
-/// edge being now; a bar under way runs on under the keys.
+/// the song, `share` of its key's width: (x, y, width, height), None when
+/// it is off the keybed or not in view. Time runs up the canvas, [`AHEAD`]
+/// seconds of it, the bottom edge being now; a bar under way runs on under
+/// the keys.
 fn bar(
     keys: &[(u8, f64, f64)],
     range: (u8, u8),
     note: &Note,
     at: f64,
     size: Size,
+    share: f64,
 ) -> Option<(f64, f64, f64, f64)> {
     let &(_, x, w) = keys.get(usize::from(note.key.checked_sub(range.0)?))?;
     if note.key > range.1 {
@@ -179,13 +336,90 @@ fn bar(
     if bottom < 0. || top > size.height {
         return None;
     }
-    let (top, bottom) = (top.max(-BLEED), bottom.min(size.height + BLEED));
-    // A gap either side, so neighbours read apart (MIDIVisualizer's bars
-    // are 0.9 of their key).
-    let inset = w * if black(note.key) { 0.08 } else { 0.07 };
+    let bleed = BLEED * w.max(2.);
+    let (top, bottom) = (top.max(-bleed), bottom.min(size.height + bleed));
+    // A gap either side, so neighbours read apart.
+    let bw = w * share.clamp(0.05, 1.);
     // Even the shortest note is a bar, not a line.
-    let height = (bottom - top).max(3.);
-    Some((x + inset, bottom - height, w - 2. * inset, height))
+    let height = (bottom - top).max((w * 0.25).max(2.));
+    Some((x + (w - bw) / 2., bottom - height, bw, height))
+}
+
+/// How much of its key's width a note's bar takes: a loud note its
+/// Design's width, a soft one a little less.
+fn share(d: &Design, n: &Note) -> f64 {
+    let v = f64::from(n.velocity.min(127)) / 127.;
+    let soft = d.notes.velocity_width * (1. - v);
+    // A sharp's key is narrower already: its bar fills more of it.
+    let sharp = if black(n.key) { 1.08 } else { 1. };
+    (d.notes.width * (1. - soft) * sharp).min(0.98)
+}
+
+/// Middle C: below it the left hand, when a song is coloured by hand.
+const SPLIT: u8 = 60;
+
+/// The voice whose colour `n` takes: its own, or with `hands` its hand's
+/// (the right hand the first colour, the left the second).
+fn voice(n: &Note, hands: bool) -> u8 {
+    match hands {
+        true => u8::from(n.key < SPLIT),
+        false => n.voice,
+    }
+}
+
+/// A note's tone in `d`, its velocity in steps, so neighbours share a
+/// gradient the renderer has already made; with `hands`, by hand.
+fn tone(d: &Design, n: &Note, hands: bool) -> Color {
+    let velocity = (n.velocity.min(127) / 8) * 8 + 4;
+    d.voice(voice(n, hands), velocity, black(n.key))
+}
+
+/// How bright a strike's flash still is `age` seconds after it.
+fn flash(age: f64) -> f64 {
+    (-age.max(0.) / 0.12).exp()
+}
+
+/// A key lit by a note.
+#[derive(Clone, Copy, Debug)]
+struct Press<'a> {
+    note: &'a Note,
+    /// 1 while it sounds, fading for [`RELEASE`] after.
+    level: f64,
+    /// Seconds since it struck.
+    age: f64,
+}
+
+/// The keys lit `at` seconds into the song, one press each: a held note
+/// beats a fading one, the latest struck among equals (piano-viz's key
+/// states).
+fn presses<'a>(notes: impl Iterator<Item = &'a Note>, at: f64) -> Vec<Press<'a>> {
+    let mut out: Vec<Press<'a>> = Vec::new();
+    for n in notes {
+        if n.start > at || at >= n.end + RELEASE {
+            continue;
+        }
+        let level = if at < n.end {
+            1.
+        } else {
+            (-(at - n.end) * 12.).exp()
+        };
+        let press = Press {
+            note: n,
+            level,
+            age: at - n.start,
+        };
+        match out.iter_mut().find(|p| p.note.key == n.key) {
+            Some(p)
+                if level > p.level + 1e-9
+                    || (level >= p.level - 1e-9 && n.start > p.note.start) =>
+            {
+                *p = press;
+            }
+            Some(_) => {}
+            None => out.push(press),
+        }
+    }
+    out
 }
 
 fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
@@ -212,94 +446,577 @@ fn rounded(x: f64, y: f64, w: f64, h: f64, r: f64) -> Path {
         .close()
 }
 
-/// Everything the falling notes draw on a canvas of `size`.
-fn draw(notes: &Notes, at: f64, range: (u8, u8), size: Size) -> Vec<Draw> {
-    let (w, h) = (size.width, size.height);
-    let keys = layout(range, w);
-    let mut out = vec![Draw::fill(rect(0., 0., w, h), Role::Field)];
-    // An octave's lanes between faint lines at each C, fainter at each F.
-    for &(n, x, _) in keys.iter().filter(|k| k.0 % 12 == 0 || k.0 % 12 == 5) {
-        if n != range.0 {
-            let alpha = if n % 12 == 0 { 0.07 } else { 0.035 };
-            out.push(Draw::fill(rect(x, 0., 1., h), Role::Ink.alpha(alpha)));
-        }
+/// A disc; a tiny one is a square, which no one can tell from a disc.
+fn disc(cx: f64, cy: f64, r: f64) -> Path {
+    if r < 0.75 {
+        return rect(cx - r, cy - r, 2. * r, 2. * r);
     }
-    let shown: Vec<&Note> = notes.between(at, at + AHEAD).collect();
-    // Naturals first, so a sharp's bar lies over a neighbour's, as its key does.
-    let mut halos = Vec::new();
-    for sharp in [false, true] {
-        for n in shown.iter().filter(|n| black(n.key) == sharp) {
-            let Some((x, y, bw, bh)) = bar(&keys, range, n, at, size) else {
+    const K: f64 = 0.552_284_749_8;
+    let (p, k) = (Point::new, r * K);
+    Path::default()
+        .move_to(p(cx + r, cy))
+        .cubic_to(p(cx + r, cy + k), p(cx + k, cy + r), p(cx, cy + r))
+        .cubic_to(p(cx - k, cy + r), p(cx - r, cy + k), p(cx - r, cy))
+        .cubic_to(p(cx - r, cy - k), p(cx - k, cy - r), p(cx, cy - r))
+        .cubic_to(p(cx + k, cy - r), p(cx + r, cy - k), p(cx + r, cy))
+        .close()
+}
+
+/// How light falls off past a lit shape's edge, as a blur's edge does: at
+/// each share of the way out, the share of its strength left (a Gaussian,
+/// gone at the end).
+const FALLOFF: [(f32, f32); 6] = [
+    (0., 1.),
+    (0.2, 0.85),
+    (0.4, 0.53),
+    (0.6, 0.24),
+    (0.8, 0.08),
+    (1., 0.),
+];
+
+/// [`FALLOFF`] of `c` at strength `a`, from `core` (full) out to 1.
+fn ramp(c: Color, a: f32, core: f32) -> Vec<(f32, Color)> {
+    // In steps, so a light that holds steady, or two alike, share one ramp
+    // the renderer has made already: it keeps 64.
+    let (a, core) = (step(a, 40.), step(core, 64.));
+    FALLOFF
+        .iter()
+        .map(|&(u, k)| (core + (1. - core) * u, c.with_alpha(a * k)))
+        .collect()
+}
+
+/// `v` to the nearest `1 / steps`.
+fn step(v: f32, steps: f32) -> f32 {
+    (v * steps).round() / steps
+}
+
+/// Light around a vertical pill from `top` down past `bottom`, `width`
+/// wide, reaching `spread` past its edge: a blurred pill, drawn as a
+/// straight side ramp and a round cap that share one falloff and meet on
+/// a whole pixel, so no seam shows.
+fn bloom(
+    out: &mut Vec<Draw>,
+    (cx, top, bottom): (f64, f64, f64),
+    width: f64,
+    spread: f64,
+    c: Color,
+    a: f32,
+) {
+    let (half, reach) = (width / 2., width / 2. + spread);
+    if a <= 0.002 || reach <= 0. || bottom <= top {
+        return;
+    }
+    let core = (half / reach) as f32;
+    let side: Vec<(f32, Color)> = ramp(c, a, core)
+        .into_iter()
+        .rev()
+        .map(|(t, c)| (0.5 - 0.5 * t, c))
+        .chain(
+            ramp(c, a, core)
+                .into_iter()
+                .map(|(t, c)| (0.5 + 0.5 * t, c)),
+        )
+        .collect();
+    let joint = (top + half).min((top + bottom) / 2.).round();
+    out.push(Draw::fill(
+        rect(cx - reach, joint, 2. * reach, bottom - joint),
+        Gradient::linear(90., side),
+    ));
+    out.push(Draw::fill(
+        rect(cx - reach, joint - reach, 2. * reach, reach),
+        Gradient::radial((0.5, 1.), 0.5, ramp(c, a, core)),
+    ));
+}
+
+/// A halo rising from the line at `ground`, centred on `cx`, `r` in
+/// radius: the top half of a soft disc.
+fn halo(out: &mut Vec<Draw>, cx: f64, ground: f64, r: f64, c: Color, a: f32) {
+    if a > 0.002 && r > 0. {
+        out.push(Draw::fill(
+            rect(cx - r, ground - r, 2. * r, r),
+            Gradient::radial((0.5, 1.), 0.5, ramp(c, a, 0.)),
+        ));
+    }
+}
+
+/// A flare along the line at `ground`: light `length` either side of
+/// `cx`, `thick` deep, its ends round; only its top half shows.
+fn flare(out: &mut Vec<Draw>, (cx, ground): (f64, f64), length: f64, thick: f64, c: Color, a: f32) {
+    if a <= 0.002 || thick <= 0. {
+        return;
+    }
+    let (left, right) = ((cx - length).round(), (cx + length).round());
+    let up: Vec<(f32, Color)> = ramp(c, a, 0.)
+        .into_iter()
+        .rev()
+        .map(|(t, c)| (1. - t, c))
+        .collect();
+    out.push(Draw::fill(
+        rect(left, ground - thick, right - left, thick),
+        Gradient::linear(180., up),
+    ));
+    for (x, centre) in [(left - thick, 1.), (right, 0.)] {
+        out.push(Draw::fill(
+            rect(x, ground - thick, thick, thick),
+            Gradient::radial((centre, 1.), 1., ramp(c, a, 0.)),
+        ));
+    }
+}
+
+/// What the falling notes show, and how.
+#[derive(Clone, Debug)]
+pub struct Show {
+    pub notes: Notes,
+    /// Seconds into the song.
+    pub at: f64,
+    /// The keys shown, as the keybed under it shows them.
+    pub range: (u8, u8),
+    pub design: Arc<Design>,
+}
+
+/// Everything the falling notes draw on a canvas of `size`.
+fn draw(show: &Show, size: Size) -> Vec<Draw> {
+    let (d, at) = (&*show.design, show.at);
+    let (w, h) = (size.width, size.height);
+    let keys = layout(show.range, w);
+    // The length every size is a share of: a natural key's width.
+    let unit = keys
+        .iter()
+        .find(|k| !black(k.0))
+        .map_or(w / 52., |k| k.2)
+        .max(1.);
+    let mut out = Vec::with_capacity(256);
+    field(&mut out, d, at, size);
+    lanes(&mut out, d, &keys, show.range, size);
+    let hands = show.notes.by_hand(d);
+    let back = sparks::reach(&d.particles).max(RELEASE);
+    let near: Vec<&Note> = show.notes.between(at - back, at + AHEAD).collect();
+    let lit = presses(near.iter().copied(), at);
+    let place = |key: u8| {
+        let &(_, x, kw) = keys.get(usize::from(key.checked_sub(show.range.0)?))?;
+        (key <= show.range.1).then_some((x + kw / 2., kw))
+    };
+    let glow = |c: Color| {
+        if d.light() {
+            c
+        } else {
+            c.lighten(0.16).scale_chroma(0.9)
+        }
+    };
+    // Light rising from each lit key, behind everything that falls.
+    if d.beams.strength > 0. {
+        for p in &lit {
+            let Some((cx, kw)) = place(p.note.key) else {
                 continue;
             };
-            let sounding = n.start <= at;
-            let c = color(n.voice, n.velocity, sharp);
-            let face = if sounding {
-                c.with_lightness((c.lightness() + 0.12).min(0.94))
-            } else {
-                c
+            let v = f64::from(p.note.velocity) / 127.;
+            let a = (d.beams.strength * p.level * (0.45 + 0.55 * v) * (1. + 0.5 * flash(p.age)))
+                .min(1.) as f32;
+            let c = glow(tone(d, p.note, hands));
+            let (tall, half) = (h * d.beams.height, kw * 0.45);
+            let spread = unit * 0.9;
+            let cone = Path::polyline(
+                [
+                    (cx - half, h),
+                    (cx + half, h),
+                    (cx + half + spread, h - tall),
+                    (cx - half - spread, h - tall),
+                ]
+                .map(|(x, y)| Point::new(x, y)),
+                true,
+            );
+            let stops = [
+                (0., c.with_alpha(0.)),
+                (0.55, c.with_alpha(a * 0.12)),
+                (0.85, c.with_alpha(a * 0.32)),
+                (1., c.with_alpha(a * 0.5)),
+            ];
+            out.push(Draw::fill(cone, Gradient::linear(180., stops)));
+        }
+    }
+    // Bars: naturals first, so a sharp's lies over its neighbours', as its
+    // key does; each sounding one's bloom behind them all.
+    let mut bars = Vec::with_capacity(near.len());
+    for sharp in [false, true] {
+        for n in near.iter().filter(|n| black(n.key) == sharp) {
+            let Some(b) = bar(&keys, show.range, n, at, size, share(d, n)) else {
+                continue;
             };
-            let r = (bw * 0.22).min(4.);
-            out.push(Draw::fill(rounded(x, y, bw, bh, r), Fill::from(face)));
-            // A lighter rim, as MIDIVisualizer brightens a bar's edge.
-            out.push(Draw::stroke(
-                rounded(x + 0.5, y + 0.5, bw - 1., bh - 1., r),
-                Fill::from(
-                    face.with_lightness((face.lightness() + 0.1).min(0.97))
-                        .with_alpha(0.55),
-                ),
-                1.,
-            ));
-            if sounding {
-                halos.push((x + bw / 2., bw, c, at - n.start));
+            bars.push((*n, b));
+        }
+    }
+    if d.glow.bloom > 0. {
+        for &(n, (x, y, bw, bh)) in &bars {
+            if n.start <= at && n.end > at {
+                let v = f64::from(n.velocity) / 127.;
+                let a = d.glow.bloom * (0.5 + 0.5 * v) * (0.7 + 0.3 * flash(at - n.start));
+                bloom(
+                    &mut out,
+                    (x + bw / 2., y, (y + bh).min(h + unit)),
+                    bw,
+                    unit * 0.55,
+                    glow(tone(d, n, hands)),
+                    (a * 0.42) as f32,
+                );
             }
         }
     }
-    // Where a sounding note meets the keys, a halo rising from them,
-    // brightest as it strikes (MIDIVisualizer's flash: full inside 0.14 of
-    // its radius, gone at its edge).
-    for (cx, bw, c, since) in halos {
-        let strike = (-since / 0.18).exp() as f32;
-        let r = (bw * 1.6).max(10.) * (1. + 0.4 * f64::from(strike));
-        let glow = c.with_lightness((c.lightness() + 0.18).min(0.97));
+    for &(n, b) in &bars {
+        note(&mut out, (d, hands), n, at, b, unit);
+    }
+    // The line the notes strike, and the light where each lands.
+    strike(&mut out, d, size, unit, show.notes.pedal().depth(at));
+    if d.glow.strength > 0. {
+        for p in &lit {
+            let Some((cx, _)) = place(p.note.key) else {
+                continue;
+            };
+            let v = f64::from(p.note.velocity) / 127.;
+            let f = flash(p.age) * d.glow.flash;
+            let c = glow(tone(d, p.note, hands));
+            let a = d.glow.strength * p.level * (0.4 + 0.6 * v);
+            let r = d.glow.radius * unit * (1. + 0.22 * f);
+            halo(
+                &mut out,
+                cx,
+                h,
+                r,
+                c,
+                (a * (0.55 + 0.3 * f).min(0.85)) as f32,
+            );
+            // The heart of it, white-hot as it strikes.
+            let white = Color::oklch(0.98, 0.03, c.hue());
+            let hot = if d.light() {
+                c
+            } else {
+                c.mix(
+                    white,
+                    (d.glow.white_hot * (0.35 + 0.65 * flash(p.age))) as f32,
+                )
+            };
+            halo(
+                &mut out,
+                cx,
+                h,
+                unit * 0.75,
+                hot,
+                (a * (0.55 + 0.45 * f).min(1.)) as f32,
+            );
+            flare(
+                &mut out,
+                (cx, h),
+                unit * (0.4 + 1.1 * f),
+                unit * 0.32,
+                hot,
+                (a * 0.85 * f.min(1.)) as f32,
+            );
+        }
+    }
+    // Sparks over it all.
+    let mut flying: Vec<Spark> = Vec::new();
+    let color = |n: &Note| glow(tone(d, n, hands));
+    let ground = Ground {
+        place: &place,
+        y: h,
+        unit,
+    };
+    sparks::sparks(
+        near.iter().copied(),
+        at,
+        &ground,
+        &d.particles,
+        &color,
+        &mut flying,
+    );
+    for s in &flying {
+        // A hot point in a soft glow: one shape, its ramp shared by every
+        // spark of its colour and brightness.
+        let reach = s.radius * if d.light() { 1.6 } else { 3.2 };
+        let core = (s.radius / reach) as f32;
+        let c = s.color;
+        let a = c.alpha();
         let stops = [
-            (0., glow.with_alpha(0.5 + 0.4 * strike)),
-            (0.14, glow.with_alpha(0.32 + 0.3 * strike)),
-            (1., glow.with_alpha(0.)),
+            (0., c.with_alpha(a)),
+            (core * 0.6, c.with_alpha(a)),
+            (core, c.with_alpha(a * 0.55)),
+            (core + (1. - core) * 0.35, c.with_alpha(a * 0.16)),
+            (1., c.with_alpha(0.)),
         ];
-        // The upper half of a disc on the keys' edge: the gradient's
-        // radius is a share of the box's longer side, its width.
         out.push(Draw::fill(
-            rect(cx - r, h - r, 2. * r, r),
-            Gradient::radial((0.5, 1.), 0.5, stops),
+            disc(s.x, s.y, reach),
+            Gradient::radial((0.5, 0.5), 0.5, stops),
         ));
     }
-    // The top fades into the field, so a note comes into view gently.
-    let fade = (h * 0.12).min(24.);
-    out.push(Draw::fill(
-        rect(0., 0., w, fade),
-        Gradient::linear(
-            180.,
-            [(0., Role::Field.alpha(1.)), (1., Role::Field.alpha(0.))],
-        ),
-    ));
+    vignette(&mut out, d, size);
+    // The pedal over the vignette: it is read, not just seen.
+    pedal(&mut out, d, show.notes.pedal(), at, size, unit);
     out
 }
 
-/// The falling notes over a keybed showing `range`, `at` seconds into the
-/// song, `height` tall and as wide as the keybed under it.
+/// The field: its gradient, and soft light drifting with the song.
+fn field(out: &mut Vec<Draw>, d: &Design, at: f64, size: Size) {
+    let (w, h) = (size.width, size.height);
+    let b = &d.background;
+    out.push(Draw::fill(
+        rect(0., 0., w, h),
+        Gradient::vertical(b.top.color(), b.bottom.color()),
+    ));
+    let turn = at * b.drift * std::f64::consts::TAU;
+    for (i, c) in b.aurora.iter().enumerate() {
+        let phase = i as f64 * 2.4;
+        // Slow, out of step with each other, never still for long.
+        let cx = w * (0.5 + 0.42 * (turn + phase).sin());
+        let cy = h * (0.42 + 0.3 * (turn * 0.73 + phase * 1.7).sin());
+        let r = w.max(h) * (0.34 + 0.06 * (turn * 0.51 + phase).cos());
+        out.push(Draw::fill(
+            rect(cx - r, cy - r, 2. * r, 2. * r),
+            Gradient::radial(
+                (0.5, 0.5),
+                0.5,
+                ramp(c.color(), b.aurora_strength as f32, 0.),
+            ),
+        ));
+    }
+}
+
+/// The lanes: the sharps' shaded, a faint line at each C.
+fn lanes(out: &mut Vec<Draw>, d: &Design, keys: &[(u8, f64, f64)], range: (u8, u8), size: Size) {
+    let b = &d.background;
+    let c = b.lanes.color();
+    if b.sharp_lanes > 0. {
+        for &(_, x, w) in keys.iter().filter(|k| black(k.0)) {
+            out.push(Draw::fill(
+                rect(x, 0., w, size.height),
+                c.with_alpha(b.sharp_lanes as f32),
+            ));
+        }
+    }
+    if b.lane_strength > 0. {
+        let a = b.lane_strength as f32;
+        let fade = Gradient::vertical(c.with_alpha(a * 0.3), c.with_alpha(a));
+        for &(n, x, _) in keys.iter().filter(|k| k.0 % 12 == 0 && k.0 != range.0) {
+            let _ = n;
+            out.push(Draw::fill(
+                rect(x.round() - 0.5, 0., 1., size.height),
+                fade.clone(),
+            ));
+        }
+    }
+}
+
+/// The sustain pedal's lane down the left edge: how far down it is, as
+/// the notes fall beside it.
+fn pedal(out: &mut Vec<Draw>, d: &Design, pedal: &Pedal, at: f64, size: Size, unit: f64) {
+    let p = &d.pedal;
+    if p.strength <= 0. || pedal.is_empty() {
+        return;
+    }
+    let h = size.height;
+    let per_second = h / AHEAD;
+    let lane = (p.width * unit).max(3.);
+    let c = p.color.color();
+    let a = p.strength as f32;
+    out.push(Draw::fill(rect(0., 0., lane, h), c.with_alpha(a * 0.08)));
+    let point =
+        |(t, depth): (f64, f32)| Point::new(lane * f64::from(depth), h - (t - at) * per_second);
+    let profile = pedal.profile(at - AHEAD * 0.1, at + AHEAD);
+    let (Some(&first), Some(&last)) = (profile.first(), profile.last()) else {
+        return;
+    };
+    let mut area = vec![Point::new(0., point(first).y)];
+    area.extend(profile.iter().map(|&v| point(v)));
+    area.push(Point::new(0., point(last).y));
+    out.push(Draw::fill(
+        Path::polyline(area, true),
+        Gradient::linear(
+            90.,
+            [(0., c.with_alpha(a * 0.25)), (1., c.with_alpha(a * 0.6))],
+        ),
+    ));
+    // Its edge, where it is down.
+    let width = (unit * 0.05).clamp(1., 2.5);
+    for run in profile.split(|v| v.1 <= 0.) {
+        if run.len() > 1 {
+            out.push(Draw::stroke(
+                Path::polyline(run.iter().map(|&v| point(v)), false),
+                c.with_alpha(a * 0.95),
+                width,
+            ));
+        }
+    }
+    // Lit at the keys while it is down.
+    let now = pedal.depth(at);
+    if now > 0. {
+        halo(out, lane / 2., h, lane * 1.8, c, a * 0.7 * now);
+    }
+}
+
+/// One note's bar: its fill, a glint, its lit edge.
+fn note(
+    out: &mut Vec<Draw>,
+    (d, hands): (&Design, bool),
+    n: &Note,
+    at: f64,
+    (x, y, bw, bh): (f64, f64, f64, f64),
+    unit: f64,
+) {
+    let s = &d.notes;
+    let sounding = n.start <= at && n.end > at;
+    let base = tone(d, n, hands);
+    let face = if sounding {
+        base.lighten(step(
+            (s.active_boost + 0.08 * flash(at - n.start)) as f32,
+            50.,
+        ))
+    } else {
+        base
+    };
+    let r = (bw * s.roundness).min(bh / 2.);
+    let amount = s.shading_amount as f32;
+    let fill: Fill = match s.shading {
+        Shading::None => face.into(),
+        Shading::Across => Gradient::linear(
+            90.,
+            [
+                (0., face.darken(amount * 0.2)),
+                (0.5, face.lighten(amount * 0.08)),
+                (1., face.darken(amount * 0.24)),
+            ],
+        )
+        .into(),
+        Shading::Along => {
+            Gradient::vertical(face.darken(amount * 0.22), face.lighten(amount * 0.06)).into()
+        }
+    };
+    out.push(Draw::fill(rounded(x, y, bw, bh, r), fill));
+    let glint = bw * 0.1;
+    if s.gloss > 0. && glint >= 0.75 && bh > 2. * r + 2. {
+        let white = Color::oklch(1., 0., 0.).with_alpha((s.gloss * 0.6) as f32);
+        out.push(Draw::fill(
+            rounded(
+                x + bw * 0.16,
+                y + r * 0.8 + 1.,
+                glint,
+                bh - 1.6 * r - 2.,
+                glint / 2.,
+            ),
+            white,
+        ));
+    }
+    if s.rim_strength > 0. {
+        let lw = (unit * 0.045).clamp(1., 3.);
+        let rim = s.rim.color();
+        let rim = if d.light() { rim } else { rim.mix(face, 0.35) };
+        out.push(Draw::stroke(
+            rounded(
+                x + lw / 2.,
+                y + lw / 2.,
+                bw - lw,
+                bh - lw,
+                (r - lw / 2.).max(0.),
+            ),
+            rim.with_alpha((s.rim_strength * if sounding { 1. } else { 0.75 }) as f32),
+            lw,
+        ));
+    }
+}
+
+/// The line along the top of the keys, a band of light above it, a little
+/// brighter while the pedal is down.
+fn strike(out: &mut Vec<Draw>, d: &Design, size: Size, unit: f64, pedal: f32) {
+    let s = &d.strike;
+    if s.strength <= 0. {
+        return;
+    }
+    let (w, h) = (size.width, size.height);
+    let c = s.color.color();
+    let a = (s.strength as f32) * (0.85 + 0.15 * pedal);
+    let band = unit * 0.7;
+    out.push(Draw::fill(
+        rect(0., h - band, w, band),
+        Gradient::vertical(c.with_alpha(0.), c.with_alpha(a * 0.2)),
+    ));
+    let line = (unit * 0.06).clamp(1., 3.);
+    out.push(Draw::fill(
+        rect(0., h - line, w, line),
+        c.with_alpha(a * 0.85),
+    ));
+}
+
+/// The edges darkened, and the top fading into the field, so a note comes
+/// into view gently.
+fn vignette(out: &mut Vec<Draw>, d: &Design, size: Size) {
+    let (w, h) = (size.width, size.height);
+    let b = &d.background;
+    let top = b.top.color();
+    let fade = h * 0.1;
+    out.push(Draw::fill(
+        rect(0., 0., w, fade),
+        Gradient::vertical(top.with_alpha(1.), top.with_alpha(0.)),
+    ));
+    if b.vignette > 0. {
+        let dark = if d.light() {
+            b.bottom.color().darken(0.3)
+        } else {
+            Color::oklch(0., 0., 0.)
+        };
+        let a = b.vignette as f32;
+        let side = w * 0.14;
+        let edge = [(0., dark.with_alpha(a * 0.7)), (1., dark.with_alpha(0.))];
+        out.push(Draw::fill(
+            rect(0., 0., side, h),
+            Gradient::linear(90., edge),
+        ));
+        out.push(Draw::fill(
+            rect(w - side, 0., side, h),
+            Gradient::linear(270., edge),
+        ));
+        out.push(Draw::fill(
+            rect(0., 0., w, h * 0.35),
+            Gradient::vertical(dark.with_alpha(a * 0.45), dark.with_alpha(0.)),
+        ));
+    }
+}
+
+/// The falling notes filling their parent, which should be as wide as
+/// the keybed under them; any size, as every length scales with it.
 #[must_use]
-pub fn waterfall(notes: &Notes, at: f64, range: (u8, u8), height: f64) -> El {
-    let notes = notes.clone();
-    let face = canvas(move |s| draw(&notes, at, range, s))
+pub fn falling(show: Show) -> El {
+    let face = canvas(move |s| draw(&show, s))
         .w(Len::Pct(100.))
         .h(Len::Pct(100.));
     // A node clips what is inside it, not its own drawing: hence the stack.
     stack![face]
         .w(Len::Pct(100.))
-        .h(height)
+        .h(Len::Pct(100.))
         .clip()
         .named("Falling notes")
+}
+
+/// The falling notes over a keybed showing `range`, `at` seconds into the
+/// song, `height` tall and as wide as the keybed under it, as the default
+/// Design draws them.
+#[must_use]
+pub fn waterfall(notes: &Notes, at: f64, range: (u8, u8), height: f64) -> El {
+    waterfall_in(notes, at, range, height, design::named(""))
+}
+
+/// [`waterfall`] as `design` draws it.
+#[must_use]
+pub fn waterfall_in(
+    notes: &Notes,
+    at: f64,
+    range: (u8, u8),
+    height: f64,
+    design: Arc<Design>,
+) -> El {
+    falling(Show {
+        notes: notes.clone(),
+        at,
+        range,
+        design,
+    })
+    .h(height)
 }
 
 /// Where a song is, moving smoothly between the audio thread's reports.
@@ -392,6 +1109,9 @@ mod tests {
             notes.lit(2.2).iter().map(|k| k.0).collect::<Vec<_>>(),
             [48, 64]
         );
+        // Each Design lights them in its own colours.
+        let ember = design::named("Ember");
+        assert_ne!(notes.lit_in(2.2, &ember), notes.lit(2.2));
         assert_eq!(Notes::default().keys(), None);
         assert!(Notes::default().between(0., 10.).next().is_none());
     }
@@ -415,8 +1135,8 @@ mod tests {
         let range = (48, 59);
         let size = Size::new(70., 300.);
         let keys = layout(range, size.width);
-        // Seven naturals 10 wide; 100 px a second.
-        let c = bar(&keys, range, &note(1., 1.5, 48), 0., size).unwrap();
+        // Seven naturals 10 wide; 100 px a second; 0.86 of its key.
+        let c = bar(&keys, range, &note(1., 1.5, 48), 0., size, 0.86).unwrap();
         assert!(
             (c.0 - 0.7).abs() < 1e-9 && (c.2 - 8.6).abs() < 1e-9,
             "{c:?}"
@@ -426,36 +1146,184 @@ mod tests {
             "{c:?}"
         );
         // A sharp's bar is narrower, over the seam between its naturals.
-        let cs = bar(&keys, range, &note(1., 1.5, 49), 0., size).unwrap();
+        let cs = bar(&keys, range, &note(1., 1.5, 49), 0., size, 0.86).unwrap();
         assert!(cs.0 > 7. && cs.0 + cs.2 < 13., "{cs:?}");
         // As it sounds, its foot is under the keys, out of sight.
-        let now = bar(&keys, range, &note(1., 1.5, 48), 1.2, size).unwrap();
+        let now = bar(&keys, range, &note(1., 1.5, 48), 1.2, size, 0.86).unwrap();
         assert!((now.1 - 270.).abs() < 1e-9, "{now:?}");
-        assert!((now.1 + now.3 - 300. - BLEED).abs() < 1e-9, "{now:?}");
+        assert!((now.1 + now.3 - 300. - BLEED * 10.).abs() < 1e-9, "{now:?}");
         // A note longer than the view runs past its top, out of sight.
-        let long = bar(&keys, range, &note(0., 9., 48), 1., size).unwrap();
-        assert!((long.1 + BLEED).abs() < 1e-9, "{long:?}");
+        let long = bar(&keys, range, &note(0., 9., 48), 1., size, 0.86).unwrap();
+        assert!((long.1 + BLEED * 10.).abs() < 1e-9, "{long:?}");
         // Off the keybed, past, or not yet in view: nothing.
-        assert!(bar(&keys, range, &note(1., 1.5, 47), 0., size).is_none());
-        assert!(bar(&keys, range, &note(1., 1.5, 60), 0., size).is_none());
-        assert!(bar(&keys, range, &note(4., 5., 50), 0., size).is_none());
-        // A blink of a note still shows.
-        let blip = bar(&keys, range, &note(1., 1., 50), 0., size).unwrap();
-        assert!(blip.3 >= 3.);
+        assert!(bar(&keys, range, &note(1., 1.5, 47), 0., size, 0.86).is_none());
+        assert!(bar(&keys, range, &note(1., 1.5, 60), 0., size, 0.86).is_none());
+        assert!(bar(&keys, range, &note(4., 5., 50), 0., size, 0.86).is_none());
+        // A blink of a note still shows, a quarter of its key tall.
+        let blip = bar(&keys, range, &note(1., 1., 50), 0., size, 0.86).unwrap();
+        assert!(blip.3 >= 2.5);
     }
 
     #[test]
-    fn the_harder_a_note_the_lighter_and_sharps_darker() {
-        let soft = color(0, 30, false);
-        let hard = color(0, 120, false);
-        assert!(hard.lightness() > soft.lightness());
-        assert!(color(0, 120, true).lightness() < hard.lightness());
-        assert_ne!(color(0, 100, false), color(1, 100, false));
-        // No amber (a warning) and no coral (an error), as DESIGN.md asks.
-        for voice in 0..=40 {
-            let hue = color(voice, 100, false).hue();
-            assert!(!(15.0..105.0).contains(&hue), "voice {voice}: {hue}");
+    fn a_bar_scales_with_its_view() {
+        // The same moment twice the size is the same picture twice as big.
+        let range = (48, 59);
+        let small = Size::new(70., 300.);
+        let big = Size::new(140., 600.);
+        let n = note(1., 1.5, 50);
+        let a = bar(&layout(range, small.width), range, &n, 0.4, small, 0.8).unwrap();
+        let b = bar(&layout(range, big.width), range, &n, 0.4, big, 0.8).unwrap();
+        for (x, y) in [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)] {
+            assert!((2. * x - y).abs() < 1e-9, "{a:?} {b:?}");
         }
+    }
+
+    #[test]
+    fn a_loud_note_is_wider_and_lighter() {
+        let d = Design::default();
+        let soft = Note {
+            velocity: 20,
+            ..note(0., 1., 60)
+        };
+        let loud = Note {
+            velocity: 127,
+            ..note(0., 1., 60)
+        };
+        assert!(share(&d, &loud) > share(&d, &soft));
+        assert!((share(&d, &loud) - d.notes.width).abs() < 1e-9);
+        assert!(share(&d, &soft) > d.notes.width * 0.8, "slightly");
+        assert!(tone(&d, &loud, false).lightness() > tone(&d, &soft, false).lightness());
+        // The colours come in steps, so near velocities share one.
+        let near = Note {
+            velocity: 121,
+            ..loud
+        };
+        assert_eq!(tone(&d, &near, false), tone(&d, &loud, false));
+        // A one-voice song in hands: the left hand its own colour.
+        let left = Note { key: 48, ..loud };
+        assert_ne!(tone(&d, &left, true).hue(), tone(&d, &loud, true).hue());
+        assert_eq!(tone(&d, &left, false).hue(), tone(&d, &loud, false).hue());
+        let one = Notes::new(vec![loud, left]);
+        assert!(one.by_hand(&d));
+        let two = Notes::new(vec![loud, Note { voice: 1, ..left }]);
+        assert!(!two.by_hand(&d), "a song with voices keeps them");
+    }
+
+    #[test]
+    fn a_key_lights_while_its_note_sounds_and_fades_after() {
+        let notes = [note(0., 1., 60), note(0.5, 2., 60), note(0.2, 0.4, 62)];
+        let at = |t: f64| presses(notes.iter(), t);
+        // Struck twice: the later note lights it.
+        let p = at(0.6);
+        let key60 = p.iter().find(|p| p.note.key == 60).unwrap();
+        assert!((key60.note.start - 0.5).abs() < 1e-9 && key60.level == 1.);
+        assert!((key60.age - 0.1).abs() < 1e-9);
+        // Just after its note ends, the key still glows, dimmer...
+        let fading = at(0.45);
+        let key62 = fading.iter().find(|p| p.note.key == 62).unwrap();
+        assert!(key62.level < 1. && key62.level > 0.3, "{}", key62.level);
+        // ...and is dark once the release has passed.
+        assert!(at(0.4 + RELEASE + 0.01).iter().all(|p| p.note.key != 62));
+        assert!(at(5.).is_empty());
+        // The strike's flash dies away quickly.
+        assert!(flash(0.) == 1. && flash(0.5) < 0.02);
+    }
+
+    #[test]
+    fn the_pedal_holds_its_depth_until_it_moves() {
+        // Down at 1 s, half up at 2, up at 3; a second channel down at 2.5.
+        let pedal = Pedal::new([
+            (1., 0, 127),
+            (2., 0, 64),
+            (2.5, 1, 100),
+            (3., 0, 0),
+            (3., 1, 0),
+            (4., 0, 0),
+        ]);
+        assert!(!pedal.is_empty());
+        assert_eq!(pedal.depth(0.5), 0.);
+        assert_eq!(pedal.depth(1.), 1.);
+        assert!((pedal.depth(2.2) - 64. / 127.).abs() < 1e-6);
+        assert!(
+            (pedal.depth(2.7) - 100. / 127.).abs() < 1e-6,
+            "the deeper channel"
+        );
+        assert_eq!(pedal.depth(3.5), 0.);
+        let down: Vec<(f64, f64, f32)> = pedal.down(0., 10.).collect();
+        assert_eq!(down.len(), 3, "{down:?}");
+        assert_eq!((down[0].0, down[0].1), (1., 2.));
+        assert_eq!((down[2].0, down[2].1), (2.5, 3.));
+        // Cut to the window asked for.
+        let cut: Vec<(f64, f64, f32)> = pedal.down(1.5, 2.2).collect();
+        assert_eq!(cut.len(), 2, "{cut:?}");
+        assert_eq!((cut[0].0, cut[1].1), (1.5, 2.2));
+        assert!(Pedal::default().is_empty());
+        assert!(Pedal::new([(1., 0, 0)]).is_empty());
+        assert_eq!(Pedal::default().down(0., 5.).count(), 0);
+        // Notes carry their song's pedal.
+        let notes = Notes::new(vec![note(0., 1., 60)]).with_pedal(pedal);
+        assert_eq!(notes.pedal().depth(1.5), 1.);
+    }
+
+    /// What a frame draws of `notes` at `at` in `design`, on `size`.
+    fn frame(notes: &Notes, at: f64, design: &str, size: Size) -> Vec<Draw> {
+        let show = Show {
+            notes: notes.clone(),
+            at,
+            range: (36, 107),
+            design: design::named(design),
+        };
+        draw(&show, size)
+    }
+
+    #[test]
+    fn a_frame_is_reproducible_and_bounded() {
+        let mut many = Vec::new();
+        for i in 0..4000 {
+            let t = f64::from(i) * 0.005;
+            many.push(Note {
+                start: t,
+                end: t + 0.6,
+                key: 36 + (i % 72) as u8,
+                velocity: 30 + (i % 97) as u8,
+                voice: (i % 5) as u8,
+            });
+        }
+        let pedal =
+            Pedal::new((0..40).map(|i| (f64::from(i) * 0.5, 0, if i % 2 == 0 { 127 } else { 0 })));
+        let notes = Notes::new(many).with_pedal(pedal);
+        let size = Size::new(1180., 260.);
+        for name in ["Midnight", "Neon", "Ivory", "Ember"] {
+            let once = frame(&notes, 10., name, size);
+            let again = frame(&notes, 10., name, size);
+            assert_eq!(once.len(), again.len(), "{name}");
+            assert!(
+                once.iter()
+                    .zip(&again)
+                    .all(|(a, b)| a.fill == b.fill && a.path == b.path),
+                "{name}: the same moment draws the same"
+            );
+            // At 200 notes a second, still a bounded picture: at most three
+            // shapes a bar, two a spark, eight a lit key, and the field's.
+            let bars = notes.between(10., 10. + AHEAD).count();
+            let bound = 3 * bars + 2 * sparks::MAX + 8 * 128 + 64;
+            assert!(once.len() <= bound, "{name}: {} of {bound}", once.len());
+        }
+        // Nothing playing yet: the field and its lines alone.
+        let quiet = frame(&Notes::default(), 0., "Midnight", size);
+        assert!(quiet.len() < 64, "{}", quiet.len());
+    }
+
+    #[test]
+    fn the_field_drifts_with_the_song_and_stands_still_with_it() {
+        let size = Size::new(800., 300.);
+        let notes = Notes::default();
+        let a = frame(&notes, 10., "Midnight", size);
+        let b = frame(&notes, 10., "Midnight", size);
+        let c = frame(&notes, 12., "Midnight", size);
+        let paths = |v: &[Draw]| v.iter().map(|d| d.path.clone()).collect::<Vec<_>>();
+        assert_eq!(paths(&a), paths(&b), "a still song is a still picture");
+        assert_ne!(paths(&a), paths(&c), "a moving one drifts");
     }
 
     #[test]

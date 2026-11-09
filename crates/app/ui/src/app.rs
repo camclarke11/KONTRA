@@ -21,6 +21,7 @@ use kontra_ui_model::Interface;
 use mui::prelude::*;
 
 use crate::Pictures;
+use crate::design;
 use crate::keyboard::{self, Keys, note_name};
 use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
@@ -308,6 +309,9 @@ pub struct View {
     pub keyboard_hidden: bool,
     /// A playing song's notes not shown falling onto the keyboard.
     pub notes_hidden: bool,
+    /// The [`design`] the falling notes are drawn in, by name; empty is
+    /// the default.
+    pub design: String,
     /// Octaves the keybed is moved from C-2 to B4.
     pub octave: i8,
     pub playing: Option<u8>,
@@ -742,6 +746,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .id("keys-range");
     let mut bar = vec![section("Keyboard"), label, spacer()];
     if song.is_some() {
+        if falls {
+            bar.push(design_picker(ui, v));
+        }
         let tip = "Show the song's notes falling onto the keys";
         let on = !v.notes_hidden;
         bar.push(notes.el.tip(tip).a11y(A11y::Toggle { on }));
@@ -769,7 +776,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .collect();
     let shown = Keys {
         range,
-        lit: song.map(|s| s.notes.lit(s.position)).unwrap_or_default(),
+        lit: song
+            .map(|s| s.notes.lit_in(s.position, &design::named(&v.design)))
+            .unwrap_or_default(),
         held: match focused.and_then(|p| p.face.as_ref()?.tree.key_pressed.as_ref()) {
             Some(pressed) => pressed.clone(),
             None => v.playing.into_iter().collect(),
@@ -836,7 +845,8 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let mut keys = Vec::new();
     if tall > 0.5 {
         let (notes, at) = song.map_or_else(Default::default, |s| (s.notes.clone(), s.position));
-        keys.push(waterfall::waterfall(&notes, at, range, tall).id("song-falling"));
+        let look = design::named(&app.view.design);
+        keys.push(waterfall::waterfall_in(&notes, at, range, tall, look).id("song-falling"));
     }
     keys.push(bed.el.grow(0).w(Len::Pct(100.)));
     col![
@@ -847,6 +857,25 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .pad(kit::edges(0., SPACE, SPACE, SPACE))
     ]
     .animate_layout_with(quick())
+}
+
+/// Which [`design`] the falling notes are drawn in: a dropdown of those
+/// that ship.
+fn design_picker(ui: &mut Ui, v: &mut View) -> El {
+    let all = design::presets();
+    let names: Vec<&str> = all.iter().map(|d| d.meta.name.as_str()).collect();
+    let current = design::named(&v.design);
+    let at = names.iter().position(|n| *n == current.meta.name);
+    let label = (
+        None,
+        current.meta.name.as_str(),
+        "How the falling notes look",
+    );
+    let r = kit::dropdown(ui, &mut v.menu, "song-design", label, &names, at);
+    if let Some(name) = r.changed.and_then(|n| names.get(n)) {
+        v.design = (*name).to_owned();
+    }
+    r.el
 }
 
 /// A gain for a readout.

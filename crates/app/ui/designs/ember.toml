@@ -1,0 +1,66 @@
+# Ember: warm sparks on a dark field, after the look Embers made famous.
+# The one Design drawn in orange, chosen by name; see design.rs.
+
+[meta]
+name = "Ember"
+description = "Warm sparks on a dark field"
+
+[background]
+top = "#120a08"
+bottom = "#050304"
+aurora = ["#ff5a1f", "#b8132e"]
+aurora_strength = 0.12
+drift = 0.018
+vignette = 0.55
+lanes = "#ffb27a"
+lane_strength = 0.05
+sharp_lanes = 0.008
+
+[notes]
+palette = ["#ff8a3d", "#ffc56b", "#ff4d5e", "#ffa94d", "#e8576f", "#ffd98a"]
+velocity_brightness = 0.5
+velocity_width = 0.12
+sharp_shade = 0.78
+width = 0.82
+roundness = 0.28
+shading = "along"
+shading_amount = 0.4
+rim = "#fff2e0"
+rim_strength = 0.4
+gloss = 0.1
+active_boost = 0.12
+
+[glow]
+strength = 0.95
+radius = 2.8
+flash = 1.3
+white_hot = 0.7
+bloom = 0.55
+
+[beams]
+strength = 0.35
+height = 0.55
+
+[strike]
+color = "#ff9a4a"
+strength = 0.65
+
+[particles]
+hit = 16.0
+hold = 9.0
+lifetime = 1.4
+lifetime_variance = 0.4
+speed = 4.2
+speed_variance = 0.6
+spread = 55.0
+gravity = -3.0
+drag = 1.2
+size = 0.07
+turbulence = 0.9
+white_hot = 0.5
+strength = 1.0
+source = "note"
+
+[pedal]
+color = "#ff9a4a"
+strength = 0.5

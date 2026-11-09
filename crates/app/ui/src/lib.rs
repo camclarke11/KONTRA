@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod artwork;
+pub mod design;
 pub mod icon;
 pub mod input;
 pub mod keyboard;
@@ -16,6 +17,7 @@ pub mod kit;
 pub mod layout;
 pub mod meter;
 pub use kontra_ui_pictures as pictures;
+pub mod sparks;
 pub mod theme;
 pub mod view;
 pub mod waterfall;

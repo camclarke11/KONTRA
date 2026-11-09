@@ -110,6 +110,9 @@ pub struct SavedView {
     pub keyboard_hidden: bool,
     /// A playing song's notes not shown falling onto the keyboard.
     pub notes_hidden: bool,
+    /// The Design the falling notes are drawn in, by name; empty is the
+    /// default.
+    pub design: String,
     pub keys_hidden: bool,
     pub mixer_wide: bool,
     pub octave: i8,

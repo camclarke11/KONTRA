@@ -2457,6 +2457,9 @@ dependencies = [
  "kontra-ui-pictures",
  "mui",
  "png",
+ "serde",
+ "toml",
+ "wgpu 30.0.1",
 ]
 
 [[package]]

@@ -1,0 +1,62 @@
+# Ivory: ink on warm paper; light that tints rather than shines.
+
+[meta]
+name = "Ivory"
+description = "Ink on warm paper"
+
+[background]
+top = "#f6f1e7"
+bottom = "#ebe3d4"
+aurora = ["#e6cf9f", "#d8c4a8"]
+aurora_strength = 0.3
+drift = 0.015
+vignette = 0.18
+lanes = "#5c4a32"
+lane_strength = 0.08
+sharp_lanes = 0.014
+
+[notes]
+palette = ["#2d4f8f", "#1f7a6d", "#7a3f8f", "#8f2d4f", "#3f6f2d", "#2d6f8f"]
+velocity_brightness = 0.35
+velocity_width = 0.16
+sharp_shade = 0.86
+width = 0.82
+roundness = 0.5
+shading = "along"
+shading_amount = 0.22
+rim = "#1a1410"
+rim_strength = 0.18
+gloss = 0.22
+active_boost = 0.08
+
+[glow]
+strength = 0.45
+radius = 2.0
+flash = 0.8
+white_hot = 0.0
+bloom = 0.2
+
+[beams]
+strength = 0.22
+height = 0.45
+
+[strike]
+color = "#5c4a32"
+strength = 0.35
+
+[particles]
+hit = 6.0
+hold = 2.0
+lifetime = 1.3
+speed = 2.4
+spread = 30.0
+gravity = -2.0
+drag = 1.0
+size = 0.06
+turbulence = 0.3
+white_hot = 0.0
+strength = 0.7
+
+[pedal]
+color = "#8a6d45"
+strength = 0.45

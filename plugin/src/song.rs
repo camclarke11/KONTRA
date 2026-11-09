@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
 use kontra_host::rack::{Event, HostNote, HostPattern};
-use kontra_ui::waterfall::{Note, Notes};
+use kontra_ui::waterfall::{Note, Notes, Pedal};
 
 use crate::folder::{Dialog, Pick};
 use crate::lock;
@@ -66,7 +66,7 @@ impl Song {
             .filter(|&(_, _, [status, ..])| status & 15 != DRUMS)
             .collect();
         let length = timeline.last().map_or(0.0, |&(time, ..)| time);
-        let notes = notes(&timeline, length);
+        let notes = notes(&timeline, length).with_pedal(pedal(&timeline));
         if notes.is_empty() {
             return Err("it has no notes outside the drum channel (10) to play".into());
         }
@@ -118,6 +118,16 @@ fn notes(timeline: &[(f64, u16, Message)], length: f64) -> Notes {
         }
     }
     Notes::new(out)
+}
+
+/// The sustain pedal (CC64) through `timeline`, for the editor to show
+/// beside the notes: how far down from each message on, on each channel.
+fn pedal(timeline: &[(f64, u16, Message)]) -> Pedal {
+    Pedal::new(
+        (timeline.iter())
+            .filter(|&&(_, _, [status, controller, _])| status & 0xF0 == 0xB0 && controller == 64)
+            .map(|&(time, _, [status, _, value])| (time, status & 15, value)),
+    )
 }
 
 /// `message` as the engine takes it: notes on the song's port, the rest as
@@ -745,6 +755,39 @@ pub(crate) mod tests {
                 (0.0, 1.0, 48, 50, 1),
                 (0.25, 0.5, 60, 80, 0)
             ]
+        );
+    }
+
+    #[test]
+    fn the_editor_sees_the_sustain_pedal_beside_the_notes() {
+        // Down from the start, up at 0.75 s, half down from 1 s to 1.25 s.
+        let melody = track(&[
+            (0, &[0xB0, 64, 127]),
+            (0, &[0x90, 60, 100]),
+            (1440, &[0xB0, 64, 0]),
+            (1440, &[0x80, 60, 0]),
+            (1920, &[0xB0, 64, 64]),
+            (1920, &[0xB0, 7, 100]),
+            (2400, &[0xB0, 64, 0]),
+        ]);
+        let song = Song::read("p.mid".into(), &file(1, 960, &[melody])).unwrap();
+        let pedal = song.notes.pedal();
+        assert_eq!(pedal.depth(0.5), 1.0);
+        assert_eq!(pedal.depth(0.9), 0.0);
+        assert!((pedal.depth(1.1) - 64.0 / 127.0).abs() < 1e-6);
+        assert_eq!(pedal.depth(1.3), 0.0);
+        // The editor gets it with the notes; the audio thread plays the
+        // messages as before.
+        let songs = Songs::default();
+        songs.play(song);
+        assert_eq!(songs.notes().pedal().depth(0.5), 1.0);
+        assert!(
+            Song::read("a.mid".into(), &self::song())
+                .unwrap()
+                .notes
+                .pedal()
+                .depth(0.1)
+                > 0.0
         );
     }
 
