@@ -244,12 +244,14 @@ fn bar(ui: &mut Ui, app: &mut App, lane: &Lane, out: &mut Vec<Action>) -> El {
         }
         items.extend([down.el, up.el]);
     }
-    let (icon, name) = if folded {
-        (Icon::Up, "Show the keyboard")
+    // The keyboard's own switch, raised while it shows: not a chevron,
+    // which would read as one more dropdown's.
+    let name = if folded {
+        "Show the keyboard"
     } else {
-        (Icon::Down, "Hide the keyboard")
+        "Hide the keyboard"
     };
-    let fold = icon_button(ui, "keys-fold", icon, name, false);
+    let fold = icon_button(ui, "keys-fold", Icon::Piano, name, !folded);
     if fold.changed {
         v.keyboard_hidden = !folded;
     }

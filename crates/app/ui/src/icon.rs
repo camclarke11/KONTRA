@@ -10,7 +10,6 @@ pub enum Icon {
     Left,
     Right,
     Down,
-    Up,
     More,
     Close,
     Sidebar,
@@ -74,7 +73,6 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
             Icon::Left => vec![line(&[(10., 4.), (6., 8.), (10., 12.)], false)],
             Icon::Right => vec![line(&[(6., 4.), (10., 8.), (6., 12.)], false)],
             Icon::Down => vec![line(&[(4., 6.), (8., 10.), (12., 6.)], false)],
-            Icon::Up => vec![line(&[(4., 10.), (8., 6.), (12., 10.)], false)],
             Icon::More => vec![dot(3.5, 8.), dot(8., 8.), dot(12.5, 8.)],
             Icon::Close => vec![
                 line(&[(4.5, 4.5), (11.5, 11.5)], false),
