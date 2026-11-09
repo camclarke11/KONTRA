@@ -1,11 +1,13 @@
 //! A recording turned into a MIDI song ([`kontra_transcribe`]): the player
-//! picks or drops a piano recording, a thread of its own reads it, hears
-//! its notes and pedal, and writes them as a MIDI file into the
-//! transcriptions folder (`~/Music/KONTRA Transcriptions`), which the
-//! Songs tab then lists; the tick plays it ([`crate::Tick`]).
+//! picks or drops a recording, a thread of its own reads it, isolates its
+//! piano from any voice or band (unless the Songs tab says not to, or the
+//! separation model is missing), hears its notes and pedal, and writes
+//! them as a MIDI file into the transcriptions folder
+//! (`~/Music/KONTRA Transcriptions`), which the Songs tab then lists; the
+//! tick plays it ([`crate::Tick`]).
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -21,7 +23,13 @@ struct Progress {
     /// Done, in ten-thousandths.
     done: AtomicU32,
     cancel: AtomicBool,
+    /// What it is doing: [`READING`], [`ISOLATING`] or [`LISTENING`].
+    stage: AtomicU8,
 }
+
+const READING: u8 = 0;
+const ISOLATING: u8 = 1;
+const LISTENING: u8 = 2;
 
 impl Progress {
     fn set(&self, done: f64) {
@@ -84,26 +92,65 @@ fn free(folder: &Path, stem: &str) -> PathBuf {
         .unwrap_or(first)
 }
 
+/// The piano alone in the recording at `audio`, as the transcription
+/// hears it (mono at its rate), from the separator at `weights`;
+/// `progress` told how far it is, from 0 to `share`.
+fn isolate(
+    audio: &Path,
+    weights: &Path,
+    progress: &Progress,
+    share: f64,
+) -> Result<Vec<f32>, String> {
+    use kontra_transcribe::{RATE, audio, separate::Separator};
+    let separator = Separator::load(weights)?;
+    let rate = separator.settings.sample_rate;
+    let [l, r] = audio::read_stereo(audio, rate)?;
+    progress.stage.store(ISOLATING, Ordering::Relaxed);
+    progress.set(0.01);
+    let [pl, pr] = separator.piano(
+        &l,
+        &r,
+        &|d| progress.set(0.01 + (share - 0.01) * d),
+        &progress.cancel,
+    )?;
+    drop(separator);
+    let mono: Vec<f32> = pl.iter().zip(&pr).map(|(a, b)| (a + b) * 0.5).collect();
+    Ok(audio::resample(&mono, rate, RATE))
+}
+
 /// The recording at `audio` heard and written into `folder` as a MIDI
-/// file, `progress` told how far it is.
-fn run(audio: &Path, folder: &Path, progress: &Progress) -> Result<PathBuf, String> {
+/// file, its piano `isolated` first when the separator is there;
+/// `progress` told how far it is.
+fn run(
+    audio: &Path,
+    folder: &Path,
+    isolated: bool,
+    progress: &Progress,
+) -> Result<PathBuf, String> {
     let model = kontra_transcribe::model_path().ok_or(
         "the transcription model is not installed (piano-transcription.onnx; see tools/transcribe-model)",
     )?;
-    let samples = kontra_transcribe::audio::read(audio)?;
-    progress.set(0.03);
+    // Isolating takes most of the time; transcribing what is left, the rest.
+    let separator = kontra_transcribe::separator_path().filter(|_| isolated);
+    let (samples, from) = match &separator {
+        Some(weights) => (isolate(audio, weights, progress, 0.8)?, 0.8),
+        None => (kontra_transcribe::audio::read(audio)?, 0.03),
+    };
+    progress.stage.store(LISTENING, Ordering::Relaxed);
+    progress.set(from);
     if progress.cancel.load(Ordering::Relaxed) {
         return Err("cancelled".into());
     }
     let model = kontra_transcribe::Model::load(&model)?;
-    progress.set(0.05);
+    let from = from + 0.02;
+    progress.set(from);
     // Half the cores, at most four: each holds a few hundred megabytes
     // while it works, and the rack keeps playing beside it.
     let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(1, 4));
     let heard = model.transcribe(
         &samples,
         threads,
-        &|d| progress.set(0.05 + 0.93 * d),
+        &|d| progress.set(from + (0.98 - from) * d),
         &progress.cancel,
     )?;
     if heard.notes.is_empty() {
@@ -130,8 +177,9 @@ fn run(audio: &Path, folder: &Path, progress: &Progress) -> Result<PathBuf, Stri
 
 impl Transcriber {
     /// Starts transcribing the recording at `audio` on a thread of its
-    /// own, into `folder`, unless one is under way.
-    pub fn start(&self, audio: PathBuf, folder: PathBuf) {
+    /// own, into `folder`, its piano `isolated` first, unless one is under
+    /// way.
+    pub fn start(&self, audio: PathBuf, folder: PathBuf, isolated: bool) {
         let mut job = lock(&self.job);
         if job.is_some() {
             return;
@@ -144,7 +192,7 @@ impl Transcriber {
         let theirs = Arc::clone(&progress);
         let thread = std::thread::Builder::new()
             .name("kontra-transcribe".into())
-            .spawn(move || run(&audio, &folder, &theirs));
+            .spawn(move || run(&audio, &folder, isolated, &theirs));
         match thread {
             Ok(thread) => {
                 *job = Some(Job {
@@ -166,9 +214,14 @@ impl Transcriber {
 
     /// What the Songs tab shows.
     pub fn shown(&self) -> Transcribing {
-        let job = lock(&self.job)
-            .as_ref()
-            .map(|j| (j.name.clone(), j.progress.done()));
+        let job = lock(&self.job).as_ref().map(|j| {
+            let what = match j.progress.stage.load(Ordering::Relaxed) {
+                READING => format!("Reading {}", j.name),
+                ISOLATING => format!("Isolating the piano in {}", j.name),
+                _ => format!("Transcribing {}", j.name),
+            };
+            (what, j.progress.done())
+        });
         let last = lock(&self.last).as_ref().map(|r| match r {
             Ok(path) => format!(
                 "Made {}",
@@ -181,6 +234,7 @@ impl Transcriber {
             job,
             last,
             ready: kontra_transcribe::model_path().is_some(),
+            separator: kontra_transcribe::separator_path().is_some(),
         }
     }
 
@@ -232,7 +286,11 @@ mod tests {
             return;
         }
         let t = Transcriber::default();
-        t.start(PathBuf::from("/nowhere/take.wav"), std::env::temp_dir());
+        t.start(
+            PathBuf::from("/nowhere/take.wav"),
+            std::env::temp_dir(),
+            false,
+        );
         let outcome = loop {
             if let (Some(o), _) = t.tick() {
                 break o;

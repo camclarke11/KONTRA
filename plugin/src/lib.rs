@@ -320,7 +320,11 @@ impl BackgroundTask for Tick {
                     }
                 }
                 Request::Export(kind) => export(p, rack, kind, &mut report),
-                Request::Transcribe(path) => p.shared.transcribe.start(path, transcribe::folder()),
+                Request::Transcribe(path) => {
+                    p.shared
+                        .transcribe
+                        .start(path, transcribe::folder(), book.isolate());
+                }
             }
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
@@ -342,7 +346,9 @@ impl BackgroundTask for Tick {
         // A recording picked to transcribe; one transcribed is listed in
         // the Songs tab and plays.
         if let Some(path) = p.shared.transcribe.dialog.picked() {
-            p.shared.transcribe.start(path, transcribe::folder());
+            p.shared
+                .transcribe
+                .start(path, transcribe::folder(), book.isolate());
         }
         let (made, transcribing) = p.shared.transcribe.tick();
         match made {

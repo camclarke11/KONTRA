@@ -26,6 +26,9 @@ pub struct SongPrefs {
     /// Whether the suggested folder has been offered: once added, a folder
     /// the player removes stays removed.
     pub suggested: bool,
+    /// Transcribe a recording as it is, voice and all, rather than its
+    /// piano alone (which is the default).
+    pub whole_mix: bool,
 }
 
 /// The touch-ups a song gets when it is read, each only where the file

@@ -25,6 +25,8 @@ pub struct Songbook {
     pub recent: Vec<usize>,
     /// The touch-ups asked for.
     pub touch: Touch,
+    /// Whether a recording's piano is isolated before it is transcribed.
+    pub isolate: bool,
     /// The song last played, as it was read.
     pub playing: Option<Played>,
     /// The folders are being read.
@@ -128,6 +130,8 @@ pub enum SongAction {
     Touch(Touch),
     /// Read the folders again.
     Rescan,
+    /// Transcribe a recording's piano alone (true), or all of it.
+    Isolate(bool),
 }
 
 /// The song last read by the Songs tab, if it is `song`.
@@ -232,8 +236,12 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let touch = touch_ups(ui, app, out);
     // A recording made into a song ([`crate::transcribe`]).
     let mut asked = Vec::new();
-    let transcribe = crate::transcribe::control(ui, &app.transcribe, &mut asked);
-    out.extend(asked.into_iter().map(Action::Transcribe));
+    let isolate = app.songbook.isolate;
+    let transcribe = crate::transcribe::control(ui, &app.transcribe, isolate, &mut asked);
+    out.extend(asked.into_iter().map(|d| match d {
+        crate::transcribe::Do::Isolate(on) => Action::Songs(SongAction::Isolate(on)),
+        d => Action::Transcribe(d),
+    }));
     col![
         row![search.el.grow(1).min_w(0), add.el, hide.el]
             .gap(TIGHT)

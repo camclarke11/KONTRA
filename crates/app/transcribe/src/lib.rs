@@ -13,6 +13,7 @@
 
 pub mod audio;
 pub mod post;
+pub mod separate;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -224,18 +225,31 @@ fn deframe(segments: &[&[f32]], columns: usize) -> Vec<f32> {
     out
 }
 
-/// Where the model is looked for: `KONTRA_TRANSCRIBE_MODEL`, beside the
-/// app (in a macOS bundle's Resources), then the app's data folder.
+/// Where the transcription model is looked for: `KONTRA_TRANSCRIBE_MODEL`,
+/// beside the app (in a macOS bundle's Resources), then the app's data
+/// folder.
 #[must_use]
 pub fn model_path() -> Option<std::path::PathBuf> {
-    const NAME: &str = "piano-transcription.onnx";
-    let env = std::env::var_os("KONTRA_TRANSCRIBE_MODEL").map(std::path::PathBuf::from);
+    find("piano-transcription.onnx", "KONTRA_TRANSCRIBE_MODEL")
+}
+
+/// Where the separation model ([`separate`]) is looked for, as
+/// [`model_path`] looks: `KONTRA_SEPARATE_MODEL` first.
+#[must_use]
+pub fn separator_path() -> Option<std::path::PathBuf> {
+    find("piano-separation.safetensors", "KONTRA_SEPARATE_MODEL")
+}
+
+/// The file `name`: at the path in `var`, beside the app, or in the app's
+/// data folder's `models`.
+fn find(name: &str, var: &str) -> Option<std::path::PathBuf> {
+    let env = std::env::var_os(var).map(std::path::PathBuf::from);
     let exe = std::env::current_exe().ok();
     let beside = exe
         .as_deref()
         .and_then(Path::parent)
-        .map(|dir| [dir.join("../Resources").join(NAME), dir.join(NAME)]);
-    let data = dirs::data_dir().map(|d| d.join("kontra-v3").join("models").join(NAME));
+        .map(|dir| [dir.join("../Resources").join(name), dir.join(name)]);
+    let data = dirs::data_dir().map(|d| d.join("kontra-v3").join("models").join(name));
     env.into_iter()
         .chain(beside.into_iter().flatten())
         .chain(data)

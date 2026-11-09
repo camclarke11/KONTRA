@@ -170,7 +170,7 @@ fn a_dropped_recording_becomes_a_song_that_plays() {
     params
         .shared
         .transcribe
-        .start(PathBuf::from(audio), folder.clone());
+        .start(PathBuf::from(audio), folder.clone(), true);
     assert!(params.shared.transcribe.shown().job.is_some(), "under way");
     let started = std::time::Instant::now();
     let made = loop {

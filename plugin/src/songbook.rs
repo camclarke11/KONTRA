@@ -229,9 +229,21 @@ impl Songbook {
                 }
             }
             SongAction::Rescan => self.rescan(),
+            SongAction::Isolate(on) => {
+                if self.prefs.whole_mix == on {
+                    self.prefs.whole_mix = !on;
+                    self.changed();
+                }
+            }
             SongAction::Play(_) | SongAction::AddFolder(None) => {}
         }
         None
+    }
+
+    /// Whether a recording's piano is isolated before it is transcribed.
+    #[must_use]
+    pub fn isolate(&self) -> bool {
+        !self.prefs.whole_mix
     }
 
     /// Lists `folder` and reads it.
@@ -296,6 +308,7 @@ impl Songbook {
             songs,
             recent: self.prefs.recent.iter().filter_map(at).collect(),
             touch: touch(self.prefs.touch),
+            isolate: self.isolate(),
             playing: self.played.as_ref().map(|(path, name, t)| app::Played {
                 path: path.clone(),
                 name: name.clone(),

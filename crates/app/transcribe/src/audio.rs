@@ -32,12 +32,24 @@ pub fn is_audio(path: &Path) -> bool {
 /// # Errors
 /// When it cannot be opened or decoded.
 pub fn read(path: &Path) -> Result<Vec<f32>, String> {
-    let (mono, rate) = decode(path)?;
+    let ([l, r], rate) = decode(path)?;
+    let mono: Vec<f32> = l.iter().zip(&r).map(|(a, b)| (a + b) * 0.5).collect();
     Ok(resample(&mono, rate, crate::RATE))
 }
 
-/// The recording at `path` as one channel at its own rate.
-fn decode(path: &Path) -> Result<(Vec<f32>, u32), String> {
+/// The recording at `path` as two channels (one heard on both, for a
+/// mono recording; the first two of more) at `rate`; at most
+/// [`crate::LONGEST`] seconds of it.
+///
+/// # Errors
+/// When it cannot be opened or decoded.
+pub fn read_stereo(path: &Path, rate: u32) -> Result<[Vec<f32>; 2], String> {
+    let ([l, r], from) = decode(path)?;
+    Ok([resample(&l, from, rate), resample(&r, from, rate)])
+}
+
+/// The recording at `path` as two channels at its own rate.
+fn decode(path: &Path) -> Result<([Vec<f32>; 2], u32), String> {
     let fail = |e: Error| format!("{}: {e}", path.display());
     let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
@@ -68,9 +80,9 @@ fn decode(path: &Path) -> Result<(Vec<f32>, u32), String> {
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(fail)?;
     let most = (crate::LONGEST * f64::from(rate)) as usize;
-    let mut mono: Vec<f32> = Vec::new();
+    let (mut left, mut right): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     let mut buffer: Option<SampleBuffer<f32>> = None;
-    while mono.len() < most {
+    while left.len() < most {
         let packet = match format.next_packet() {
             Ok(p) => p,
             // The end of the stream.
@@ -94,18 +106,18 @@ fn decode(path: &Path) -> Result<(Vec<f32>, u32), String> {
             _ => buffer.insert(SampleBuffer::new(decoded.capacity() as u64, spec)),
         };
         b.copy_interleaved_ref(decoded);
-        let scale = 1. / channels as f32;
-        mono.extend(
-            b.samples()
-                .chunks(channels)
-                .map(|frame| frame.iter().sum::<f32>() * scale),
-        );
+        for frame in b.samples().chunks(channels) {
+            let l = frame.first().copied().unwrap_or(0.);
+            left.push(l);
+            right.push(frame.get(1).copied().unwrap_or(l));
+        }
     }
-    mono.truncate(most);
-    if mono.is_empty() {
+    left.truncate(most);
+    right.truncate(most);
+    if left.is_empty() {
         return Err(format!("{}: no audio in it", path.display()));
     }
-    Ok((mono, rate))
+    Ok(([left, right], rate))
 }
 
 /// The zeroth modified Bessel function of the first kind, for the Kaiser

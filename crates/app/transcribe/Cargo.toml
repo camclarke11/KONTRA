@@ -10,6 +10,15 @@ description = "Piano audio to MIDI notes and pedal: ByteDance's high-resolution 
 workspace = true
 
 [dependencies]
+candle-core = "0.11"
+candle-nn = "0.11"
 dirs = "5"
+realfft = "3"
+serde_json = "1"
 symphonia = { version = "0.5", default-features = false, features = ["aac", "aiff", "alac", "caf", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 tract-onnx = "0.23"
+
+# The separator runs on the GPU through Metal on a Mac.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["metal"] }
+candle-nn = { version = "0.11", features = ["metal"] }

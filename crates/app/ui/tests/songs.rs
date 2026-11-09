@@ -307,8 +307,9 @@ fn the_keyboard_bar_names_the_chord_from_the_keys_alone_without_the_tab() {
 
 /// The Songs tab turns a recording into a song: "Transcribe a recording…"
 /// asks for one once the model is there (and says what is missing when it
-/// is not); while one is under way it shows how far and can stop it; then
-/// it says what it made.
+/// is not), "Piano only" chooses whether its piano is isolated first;
+/// while one is under way it shows what it is doing and how far, and can
+/// stop it; then it says what it made.
 #[test]
 fn a_recording_is_transcribed_from_the_songs_tab() {
     use kontra_ui::transcribe::{Do, Transcribing};
@@ -327,8 +328,28 @@ fn a_recording_is_transcribed_from_the_songs_tab() {
         click(&mut ui, &mut app, "transcribe"),
         [Action::Transcribe(Do::Pick)]
     );
+    // "Piano only" isolates the piano first: it needs its model, and
+    // flips the songbook's choice.
+    assert!(shown(&ui, "transcribe-isolate"));
+    app.songbook.isolate = true;
+    assert!(
+        click(&mut ui, &mut app, "transcribe-isolate").is_empty(),
+        "no separator, nothing asked"
+    );
+    app.transcribe.separator = true;
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        click(&mut ui, &mut app, "transcribe-isolate"),
+        [Action::Songs(SongAction::Isolate(false))]
+    );
+    app.songbook.isolate = false;
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        click(&mut ui, &mut app, "transcribe-isolate"),
+        [Action::Songs(SongAction::Isolate(true))]
+    );
     app.transcribe = Transcribing {
-        job: Some(("Nocturne take.m4a".into(), 0.42)),
+        job: Some(("Isolating the piano in Nocturne take.m4a".into(), 0.42)),
         ready: true,
         ..Transcribing::default()
     };

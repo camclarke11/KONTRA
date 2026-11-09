@@ -320,6 +320,27 @@ ByteDance, 2020; arXiv:2010.01815), reviewed on 2026-11-09.
   conversion of those weights, under the same licence, attributed as
   above and in the Songs tab's tooltip.
 
+## Piano separation: BS-RoFormer
+
+`crates/app/transcribe/src/separate.rs` (a recording's piano isolated
+before it is transcribed) implements BS-RoFormer, reviewed on 2026-11-09.
+
+- Paper: "Music Source Separation with Band-Split RoPE Transformer"
+  (Wei-Tsung Lu, Ju-Chiang Wang, Qiuqiang Kong, Yun-Ning Hung; ByteDance,
+  2023; arXiv:2309.02612).
+- Code: [lucidrains/BS-RoFormer](https://github.com/lucidrains/BS-RoFormer),
+  MIT, as packaged by [openmirlab/bs-roformer-infer](https://github.com/openmirlab/bs-roformer-infer)
+  (MIT). `separate.rs` ports its forward pass (band split, time and
+  frequency transformers with rotary positions and gated attention, mask
+  estimators, the STFT) and the overlapping, cross-faded chunks of its
+  `demix_track`; `tools/separate-model/export.py` loads its model classes
+  to export the weights. No source file was copied whole.
+- Weights: BS-RoFormer-SW (six stems), community-trained; its trainer is
+  undocumented and **no licence is stated**. They are not in this
+  repository and are not redistributed; `tools/separate-model` downloads
+  them for the user's own use (SHA-256
+  `24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e`).
+
 ## CORE-MATH binary32 logarithm
 
 The retired v2 safe Rust binary32 logarithm in

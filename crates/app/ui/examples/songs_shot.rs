@@ -212,16 +212,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             (
                 "transcribing",
                 kontra_ui::transcribe::Transcribing {
-                    job: Some(("Nocturne in E-flat (my take).m4a".into(), 0.42)),
+                    job: Some(("Isolating the piano in Fix You (live).m4a".into(), 0.42)),
                     ready: true,
+                    separator: true,
                     ..Default::default()
                 },
             ),
             (
                 "transcribed",
                 kontra_ui::transcribe::Transcribing {
-                    last: Some("Made Nocturne in E-flat (my take).mid".into()),
+                    last: Some("Made Fix You (live).mid".into()),
                     ready: true,
+                    separator: true,
                     ..Default::default()
                 },
             ),
