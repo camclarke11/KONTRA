@@ -2367,6 +2367,7 @@ dependencies = [
  "crossbeam-queue",
  "dirs",
  "kontra-align",
+ "kontra-format-sfz",
  "kontra-host",
  "kontra-library",
  "kontra-protocol",

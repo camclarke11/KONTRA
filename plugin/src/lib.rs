@@ -69,8 +69,9 @@ pub struct KontraParams {
     pub look: RwLock<String>,
     #[skip]
     pub shared: Shared,
-    #[meter]
-    pub level: MeterSlot,
+    // No `#[meter]`: the editor draws its levels from the rack. The
+    // standalone reads a meter under the lock its audio callback takes, and
+    // a callback that loses that race plays a silent block.
 }
 
 use KontraParamsParamId as P;
@@ -444,7 +445,6 @@ impl PluginLogic for Kontra {
         // The master ramps from the last block's gain to this one's.
         let target = db_to_linear(p.volume.value());
         let step = (target - s.gain) / frames.max(1) as f32;
-        let mut peak = 0.0f32;
         for ch in 0..b.num_output_channels() {
             b.output(ch).fill(0.0);
         }
@@ -473,12 +473,10 @@ impl PluginLogic for Kontra {
                 for (n, (o, frame)) in out.iter_mut().zip(pair).enumerate() {
                     let x = frame.get(ch % 2).copied().unwrap_or(0.0);
                     *o = x * (s.gain + step * (start + n) as f32);
-                    peak = peak.max(o.abs());
                 }
             }
         }
         s.gain = target;
-        cx.set_meter(&p.level, peak.min(1.0));
         ProcessStatus::Normal
     }
 

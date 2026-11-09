@@ -6,7 +6,7 @@
 //!
 //! The editor and the audio thread share [`Songs`]: lock-free queues in and
 //! out (a song to play or stop; songs done with, freed on the tick) and
-//! atomics for what the header shows.
+//! atomics for where it is ([`Songs::position_at`]).
 //!
 //! A song plays on its own port ([`PORT`]), so neither the host's nor the
 //! editor's note-offs end its notes, and on its own channels, so each part
@@ -15,7 +15,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
 use kontra_host::rack::{Event, HostNote, HostPattern};
@@ -297,21 +298,23 @@ impl Playing {
     }
 
     /// This block's events at their frame in it, into `out` while it has
-    /// room (the rest wait for the next block); false once it has ended.
-    fn block(&mut self, rate: f64, frames: usize, out: &mut Vec<(u32, Event)>) -> bool {
+    /// room (the rest wait for the next block). Once its last event has
+    /// played: the frame in this block that event fell on.
+    fn block(&mut self, rate: f64, frames: usize, out: &mut Vec<(u32, Event)>) -> Option<u32> {
         let end = self.frame + frames as u64;
+        let mut last = 0;
         while let Some(&(time, message)) = self.song.events.get(self.next) {
             let at = (time * rate).round() as u64;
             if at >= end || out.len() == out.capacity() {
                 break;
             }
-            let offset = at.saturating_sub(self.frame);
-            out.push((u32::try_from(offset).unwrap_or(0), event(message)));
+            last = u32::try_from(at.saturating_sub(self.frame)).unwrap_or(0);
+            out.push((last, event(message)));
             self.hold(message);
             self.next += 1;
         }
         self.frame = end;
-        self.next < self.song.events.len()
+        (self.next >= self.song.events.len()).then_some(last)
     }
 
     fn hold(&mut self, [status, key, velocity]: Message) {
@@ -329,24 +332,19 @@ impl Playing {
     }
 
     /// Ends every key it holds and lifts the sustain pedal on its channels,
-    /// at the block's start: stopping it leaves nothing sounding.
-    fn release(&mut self, out: &mut Vec<(u32, Event)>) {
+    /// at frame `at` of the block: stopping it leaves nothing sounding.
+    fn release(&mut self, at: u32, out: &mut Vec<(u32, Event)>) {
         for (channel, held) in (0u8..).zip(self.held.iter_mut()) {
             for key in 0..128u8 {
                 if *held & 1 << key != 0 && out.len() < out.capacity() {
-                    out.push((0, event([0x80 | channel, key, 0])));
+                    out.push((at, event([0x80 | channel, key, 0])));
                 }
             }
             *held = 0;
             if self.channels & 1 << channel != 0 && out.len() < out.capacity() {
-                out.push((0, Event::midi1(0xB0 | channel, 64, 0)));
+                out.push((at, Event::midi1(0xB0 | channel, 64, 0)));
             }
         }
-    }
-
-    /// Where it is, in milliseconds.
-    fn millis(&self, rate: f64) -> u32 {
-        (self.frame as f64 / rate.max(1.0) * 1000.0) as u32
     }
 }
 
@@ -364,8 +362,14 @@ pub struct Songs {
     /// The "Play MIDI" picker.
     pub dialog: Dialog,
     playing: AtomicBool,
-    /// Where it is, in milliseconds.
-    position: AtomicU32,
+    /// Seconds into the song at the end of the last block rendered, as
+    /// `f64` bits.
+    rendered: AtomicU64,
+    /// When, in nanoseconds from `epoch`, the song's start would have been
+    /// rendered, by the last block's start and when it was rendered: the
+    /// audio clock as the editor sees it ([`Songs::position_at`]).
+    origin: AtomicI64,
+    epoch: Instant,
     /// What plays: its name and length in seconds, set as it starts.
     title: Mutex<Option<(String, f64)>>,
     /// The folder the last song came from, where the picker opens.
@@ -383,7 +387,9 @@ impl Default for Songs {
             retired: ArrayQueue::new(8),
             dialog: Dialog::new(Pick::Song),
             playing: AtomicBool::new(false),
-            position: AtomicU32::new(0),
+            rendered: AtomicU64::new(0),
+            origin: AtomicI64::new(0),
+            epoch: Instant::now(),
             title: Mutex::new(None),
             folder: Mutex::new(None),
             shown: AtomicU32::new(u32::MAX),
@@ -404,7 +410,7 @@ impl Songs {
     /// Plays `song`, replacing what plays.
     pub fn play(&self, song: Song) {
         *lock(&self.title) = Some((song.name.clone(), song.length));
-        self.position.store(0, Ordering::Relaxed);
+        self.stamp(0, 0, 1.0);
         self.playing.store(true, Ordering::Release);
         // Full only if the audio thread has stopped: nothing would play it.
         let _ = self.commands.push(Command::Play(Box::new(song)));
@@ -436,8 +442,46 @@ impl Songs {
             return None;
         }
         let (name, length) = lock(&self.title).clone()?;
-        let position = f64::from(self.position.load(Ordering::Relaxed)) / 1000.0;
+        let position = self.position_at(Instant::now())?;
         Some((name, position.min(length), length))
+    }
+
+    /// While a song plays: where it is, in seconds, at `at` (the instant a
+    /// frame draws for): the last block rendered, moved on by the time
+    /// since, never past what has been rendered. It moves smoothly between
+    /// blocks, so a picture of the song can be drawn from it every frame.
+    /// The audio is heard later than this by the output's latency.
+    pub fn position_at(&self, at: Instant) -> Option<f64> {
+        if !self.playing.load(Ordering::Acquire) {
+            return None;
+        }
+        let rendered = self.rendered();
+        let since = self
+            .nanos(at)
+            .saturating_sub(self.origin.load(Ordering::Acquire));
+        Some((since as f64 / 1e9).clamp(0.0, rendered))
+    }
+
+    /// Seconds into the song at the end of the last block rendered.
+    fn rendered(&self) -> f64 {
+        f64::from_bits(self.rendered.load(Ordering::Acquire))
+    }
+
+    /// `at` in nanoseconds from `epoch`.
+    fn nanos(&self, at: Instant) -> i64 {
+        let since = at.saturating_duration_since(self.epoch).as_nanos();
+        i64::try_from(since).unwrap_or(i64::MAX)
+    }
+
+    /// A block from frame `start` to `end` of the song, at `rate`, is being
+    /// rendered now.
+    fn stamp(&self, start: u64, end: u64, rate: f64) {
+        let rate = rate.max(1.0);
+        let start = (start as f64 / rate * 1e9) as i64;
+        let origin = self.nanos(Instant::now()).saturating_sub(start);
+        self.origin.store(origin, Ordering::Release);
+        self.rendered
+            .store((end as f64 / rate).to_bits(), Ordering::Release);
     }
 
     /// On the tick: frees songs the audio thread is done with; true when
@@ -445,7 +489,7 @@ impl Songs {
     pub fn tick(&self) -> bool {
         while self.retired.pop().is_some() {}
         let now = if self.playing.load(Ordering::Acquire) {
-            self.position.load(Ordering::Relaxed) / 1000
+            self.rendered() as u32
         } else {
             u32::MAX
         };
@@ -465,7 +509,7 @@ impl Songs {
         let mut added = false;
         while let Some(command) = self.commands.pop() {
             if let Some(mut old) = now.take() {
-                old.release(out);
+                old.release(0, out);
                 added = true;
                 self.retire(old.song);
             }
@@ -480,10 +524,12 @@ impl Songs {
         let Some(playing) = now.as_mut() else {
             return added;
         };
-        let more = playing.block(rate, frames, out);
-        self.position.store(playing.millis(rate), Ordering::Relaxed);
-        if !more {
-            playing.release(out);
+        let start = playing.frame;
+        let ended = playing.block(rate, frames, out);
+        self.stamp(start, playing.frame, rate);
+        // After its last event, at that event's frame, whatever the block.
+        if let Some(at) = ended {
+            playing.release(at, out);
             if let Some(done) = now.take() {
                 self.retire(done.song);
             }
@@ -534,7 +580,7 @@ pub(crate) mod tests {
     }
 
     /// A track from (tick, bytes) in order, closed with end of track.
-    fn track(events: &[(usize, &[u8])]) -> Vec<u8> {
+    pub(super) fn track(events: &[(usize, &[u8])]) -> Vec<u8> {
         let mut body = Vec::new();
         let mut last = 0;
         for &(tick, bytes) in events {
@@ -546,7 +592,7 @@ pub(crate) mod tests {
         chunk(b"MTrk", &body)
     }
 
-    fn file(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
+    pub(super) fn file(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
         let mut header = Vec::new();
         header.extend(format.to_be_bytes());
         header.extend((tracks.len() as u16).to_be_bytes());
@@ -745,6 +791,50 @@ pub(crate) mod tests {
         assert_eq!(songs.status().map(|s| s.0), Some("b.mid".into()));
     }
 
+    /// The song holds the pedal from its start; ending, it lifts it on the
+    /// frame of its last event (G's note-off at 3 s), not at the start of
+    /// the block that event falls in.
+    #[test]
+    fn an_ending_song_lets_go_after_its_last_event_at_any_block_size() {
+        for frames in [64, 512, 1000, 4096] {
+            let songs = Songs::default();
+            songs.play(Song::read("a.mid".into(), &song()).unwrap());
+            let mut now = None;
+            let events = play(&songs, &mut now, frames, 200_000 / frames);
+            let up = events
+                .iter()
+                .rev()
+                .find(|(_, e)| *e == Event::midi1(0xB0, 64, 0));
+            assert_eq!(up.map(|e| e.0), Some(144_000), "blocks of {frames}");
+            assert!(now.is_none());
+        }
+    }
+
+    /// Between blocks the playhead moves on with the clock, from where the
+    /// last block started and never past where it ended.
+    #[test]
+    fn the_playhead_moves_between_blocks_up_to_what_is_rendered() {
+        let songs = Songs::default();
+        assert_eq!(songs.position_at(Instant::now()), None);
+        songs.play(Song::read("a.mid".into(), &song()).unwrap());
+        assert_eq!(songs.position_at(Instant::now()), Some(0.0), "not begun");
+        let mut now = None;
+        // A tenth of a second, 0.0..0.1.
+        play(&songs, &mut now, 4800, 1);
+        let rendered = Instant::now();
+        let at = |ms| songs.position_at(rendered + std::time::Duration::from_millis(ms));
+        let half = at(50).unwrap();
+        assert!((0.05..0.1).contains(&half), "{half}");
+        assert_eq!(at(1000), Some(0.1), "held where the block ended");
+        assert!(at(20).unwrap() < half);
+        // The next block starts where the last ended.
+        play(&songs, &mut now, 4800, 1);
+        let next = songs.position_at(Instant::now()).unwrap();
+        assert!((0.1..0.15).contains(&next), "{next}");
+        songs.stop();
+        assert_eq!(songs.position_at(Instant::now()), None);
+    }
+
     #[test]
     fn a_full_block_holds_the_rest_for_the_next() {
         let songs = Songs::default();
@@ -772,3 +862,6 @@ pub(crate) mod tests {
         assert_eq!(events, [(0, b), (0, a), (5, a), (5, c)]);
     }
 }
+
+#[cfg(test)]
+mod render;

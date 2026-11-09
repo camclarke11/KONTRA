@@ -21,6 +21,15 @@ fn plugin_contract() {
     moose_test::assert_corrupt_state_no_crash::<crate::Plugin>();
 }
 
+/// The standalone reads a plugin's meters under the lock its audio callback
+/// takes, about 30 times a second while the editor is open, and a callback
+/// that loses that race plays a silent block. The editor draws its levels
+/// from the rack, so the plugin publishes no meter for it to poll.
+#[test]
+fn the_editor_polls_no_meter_through_the_plugin() {
+    assert!(KontraParams::new().meter_ids().is_empty());
+}
+
 /// Preserve the v3 plugin identifiers when changing its display name.
 #[test]
 fn v3_has_its_own_identity() {
