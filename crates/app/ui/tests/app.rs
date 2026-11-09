@@ -828,6 +828,9 @@ fn a_drag_on_the_seek_bar_moves_the_song_or_marks_a_loop() {
         "{times:?}"
     );
     assert!((times[0] - 30.).abs() < 1. && (times.last().unwrap() - 90.).abs() < 1.);
+    // Again, from where the last drag left the pointer: it still takes it.
+    let again = drag(&mut ui, &mut app, false);
+    assert_eq!(again, seeks, "a second drag moves it too");
     let looped = drag(&mut ui, &mut app, true);
     assert!(
         matches!(looped[..], [Command::Marks(Some(a), Some(b)), Command::Loop(true)]

@@ -36,6 +36,8 @@ pub struct Player {
     about: Option<(u32, About)>,
     /// When the player last asked something of the transport.
     asked: Option<Instant>,
+    /// `KONTRA_STAGE`, read once ([`Player::autostage`]).
+    autostaged: bool,
 }
 
 impl Player {
@@ -45,6 +47,7 @@ impl Player {
         let Some(now) = songs.now() else {
             *self = Self {
                 asked: self.asked,
+                autostaged: self.autostaged,
                 ..Self::default()
             };
             return None;
@@ -125,6 +128,18 @@ impl Player {
         );
         self.moved = Some((notes, by, moved.clone()));
         moved
+    }
+
+    /// Once a song is `loaded`, once per editor: whether `KONTRA_STAGE` asks
+    /// for the Stage (`1`) or the Stage filling the screen (`full`), as
+    /// `Some(full)`. With `KONTRA_PLAY`, a way to show the Stage without
+    /// the pointer, for screenshots of the standalone.
+    pub fn autostage(&mut self, loaded: bool) -> Option<bool> {
+        if !loaded || std::mem::replace(&mut self.autostaged, true) {
+            return None;
+        }
+        let asked = std::env::var("KONTRA_STAGE").ok()?;
+        (!asked.is_empty() && asked != "0").then(|| asked.eq_ignore_ascii_case("full"))
     }
 
     /// Whether frames should follow the song: it moves, or the player just

@@ -629,6 +629,13 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         for key in keys.take() {
             kontra_ui::stage::shortcut(&mut app, key, &mut changed);
         }
+        if let Some(full) = player.autostage(app.song.is_some()) {
+            kontra_ui::stage::shortcut(&mut app, kontra_ui::stage::Shortcut::Stage, &mut changed);
+            if full {
+                app.view.stage.full = true;
+                screen.ask(true);
+            }
+        }
         let response = kontra_ui::app::view(ui, &mut app);
         changed.extend(response.changed);
         keys.loaded.store(app.song.is_some(), Ordering::Release);

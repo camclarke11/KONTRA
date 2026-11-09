@@ -324,9 +324,15 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             ]
             .align(Align::Center)
             .w(Len::Pct(100.))
-            .h(Len::Pct(100.)),
+            .h(Len::Pct(100.))
+            // Only to be seen: the pointer goes through it.
+            .disabled(),
         );
     }
+    // Over the keys at the window's foot, the keys faint through it. Over
+    // the falling notes instead, MUI's hit map stopped routing the pointer
+    // to it after its first drag (a second seek-bar drag did nothing), so
+    // it stays here until that is understood.
     if fade > 0.01 {
         let bar = bar(ui, app, &song, out);
         layers.push(
@@ -450,7 +456,8 @@ fn bar(ui: &mut Ui, app: &mut App, song: &Song, out: &mut Vec<Action>) -> El {
     .gap(TIGHT)
     .pad((SPACE * 1.5, TIGHT * 1.5))
     .w(Len::Pct(100.))
-    .fill(Role::Surface)
+    // The keys show faintly through it.
+    .fill(Role::Surface.alpha(0.88))
     .stroke(hairline())
     .stroke_width(1)
     .named("Transport")
