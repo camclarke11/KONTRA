@@ -13,6 +13,7 @@ mod editor;
 mod export;
 mod folder;
 mod input;
+mod live;
 mod look;
 #[cfg(test)]
 mod playtest;
@@ -114,6 +115,8 @@ pub struct Shared {
     songbook: songbook::Shared,
     /// Recording what the player plays ([`record`]).
     record: record::Recorder,
+    /// What the player plays, for the keyboard strip to show ([`live`]).
+    live: live::Live,
     /// Exporting the song to audio or video ([`export`]).
     export: export::Exports,
     /// The environment's practice, take and export ([`studio::Auto`]).
@@ -530,6 +533,8 @@ impl PluginLogic for Kontra {
         }
         // What the player played, for a take (not a song's notes).
         (p.shared.record).process(&mut s.record, s.rate, frames, &s.input);
+        // And for the editor to show as it is played.
+        p.shared.live.process(s.rate, &s.input);
         // A MIDI file the editor plays, alongside the host's events.
         if p.shared
             .song

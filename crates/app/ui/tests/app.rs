@@ -5,7 +5,7 @@
 use kontra_ui::app::{
     self, Action, App, Envelope, Face, Format, Library, Param, Part, PartTab, Sound,
 };
-use kontra_ui::waterfall::{Note, Notes};
+use kontra_ui::waterfall::{Note, Notes, Played};
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 
 fn frame(ui: &mut Ui, app: &mut App, input: Input) -> (Vec<Action>, bool) {
@@ -212,6 +212,66 @@ fn a_playing_songs_notes_fall_onto_the_keys() {
         !frame(&mut ui, &mut app, Input::default()).1,
         "stopped: the host draws nothing until something changes"
     );
+}
+
+/// With no song, the keyboard strip is as it was until the player plays;
+/// from then on what they play rises from the keys in a lane as wide as
+/// the keybed, which shows a piano's keys. "Notes" hides it, and the
+/// keybed has its octaves back; a song's notes take its place while one
+/// plays.
+#[test]
+fn what_the_player_plays_rises_from_the_keys() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let resting = frame_of(&ui, "keybed").unwrap();
+    assert!(
+        frame_of(&ui, "played-rising").is_none(),
+        "nothing played yet"
+    );
+    assert!(frame_of(&ui, "song-notes").is_none());
+    let held = Note {
+        start: 0.5,
+        end: f64::INFINITY,
+        key: 60,
+        velocity: 100,
+        voice: 0,
+    };
+    app.played = Played {
+        notes: Notes::new(vec![held]),
+        at: 1.0,
+        begun: true,
+    };
+    settle(&mut ui, &mut app);
+    let lane = frame_of(&ui, "played-rising").expect("the notes rise");
+    let bed = frame_of(&ui, "keybed").unwrap();
+    assert!((lane.x - bed.x).abs() < 0.5 && (lane.size.width - bed.size.width).abs() < 0.5);
+    assert!((lane.y + lane.size.height - bed.y).abs() < 0.5);
+    assert!((bed.size.height - resting.size.height).abs() < 0.5);
+    assert!(frame_of(&ui, "octave-up").is_none(), "a piano's keys");
+    assert!(frame_of(&ui, "song-design").is_some());
+    click(&mut ui, &mut app, "song-notes");
+    assert!(app.view.notes_hidden);
+    assert!(frame_of(&ui, "played-rising").is_none());
+    assert!(frame_of(&ui, "octave-up").is_some());
+    click(&mut ui, &mut app, "song-notes");
+    assert!(frame_of(&ui, "played-rising").is_some());
+    // A song: its notes fall in the lane instead.
+    app.song = Some(app::Song {
+        name: "one.mid".into(),
+        position: 0.6,
+        length: 2.0,
+        notes: Notes::new(vec![Note {
+            start: 0.5,
+            end: 1.0,
+            ..held
+        }]),
+        ..Default::default()
+    });
+    settle(&mut ui, &mut app);
+    assert!(frame_of(&ui, "song-falling").is_some());
+    assert!(frame_of(&ui, "played-rising").is_none());
 }
 
 /// While a song's notes fall, a dropdown beside "Notes" picks their

@@ -262,6 +262,60 @@ impl Notes {
     }
 }
 
+/// What the player plays, as it sounds: their notes on a clock of their
+/// own (a held note ends nowhere yet, at infinity), and their pedal. With
+/// no song they rise from the keys; under a falling song, the keys they
+/// strike light in a colour of their own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Played {
+    pub notes: Notes,
+    /// Now, on their clock, in seconds.
+    pub at: f64,
+    /// Whether they have played a note since the editor opened: with no
+    /// song, the keyboard strip makes room for them from then on.
+    pub begun: bool,
+}
+
+/// The voice the player's notes take under a song: the palette's third
+/// colour, the first two being a piano file's hands.
+const PLAYER: u8 = 2;
+
+impl Played {
+    /// The keys the player holds, in `design`'s colours: by hand when
+    /// `alone` (no song falls), else in the player's own colour.
+    #[must_use]
+    pub fn lit_in(&self, design: &Design, alone: bool) -> Vec<(u8, Color)> {
+        if alone {
+            return self.notes.lit_in(self.at, design);
+        }
+        let mut lit: Vec<(u8, Color)> = Vec::new();
+        for n in self.notes.sounding(self.at) {
+            if !lit.iter().any(|k| k.0 == n.key) {
+                lit.push((n.key, design.voice(PLAYER, 110, false)));
+            }
+        }
+        lit
+    }
+}
+
+/// `played`'s keys over `lit` (a song's), the player's winning a key both
+/// sound.
+#[must_use]
+pub fn with_played(
+    mut lit: Vec<(u8, Color)>,
+    played: &Played,
+    design: &Design,
+    alone: bool,
+) -> Vec<(u8, Color)> {
+    for (key, c) in played.lit_in(design, alone) {
+        match lit.iter_mut().find(|k| k.0 == key) {
+            Some(k) => k.1 = c,
+            None => lit.push((key, c)),
+        }
+    }
+    lit
+}
+
 /// Whole octaves from a C holding `keys`, at least `least` of them, with
 /// the room spread either side: the keybed's range while it follows a song.
 #[must_use]
@@ -317,12 +371,13 @@ const BLEED: f64 = 0.5;
 /// the song, `share` of its key's width: (x, y, width, height), None when
 /// it is off the keybed or not in view. Time runs up the canvas, [`AHEAD`]
 /// seconds of it, the bottom edge being now; a bar under way runs on under
-/// the keys.
+/// the keys. `rising`, time runs the other way: the bar grows up out of
+/// its key while the note is held and floats away once it ends.
 fn bar(
     keys: &[(u8, f64, f64)],
     range: (u8, u8),
     note: &Note,
-    at: f64,
+    (at, rising): (f64, bool),
     size: Size,
     share: f64,
 ) -> Option<(f64, f64, f64, f64)> {
@@ -331,8 +386,19 @@ fn bar(
         return None;
     }
     let per_second = size.height / AHEAD;
-    let top = size.height - (note.end - at) * per_second;
-    let bottom = size.height - (note.start - at) * per_second;
+    let (top, bottom) = if rising {
+        let bottom = if note.end > at {
+            f64::INFINITY
+        } else {
+            size.height - (at - note.end) * per_second
+        };
+        (size.height - (at - note.start) * per_second, bottom)
+    } else {
+        (
+            size.height - (note.end - at) * per_second,
+            size.height - (note.start - at) * per_second,
+        )
+    };
     if bottom < 0. || top > size.height {
         return None;
     }
@@ -564,7 +630,7 @@ fn flare(out: &mut Vec<Draw>, (cx, ground): (f64, f64), length: f64, thick: f64,
 }
 
 /// What the falling notes show, and how.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Show {
     pub notes: Notes,
     /// Seconds into the song.
@@ -572,6 +638,27 @@ pub struct Show {
     /// The keys shown, as the keybed under it shows them.
     pub range: (u8, u8),
     pub design: Arc<Design>,
+    /// The notes rise from the keys as they are played, rather than fall
+    /// onto them: what the player plays, with no song.
+    pub rising: bool,
+    /// What the player plays under a falling song: the keys they strike
+    /// light and spark in a colour of their own.
+    pub played: Option<Played>,
+}
+
+impl Show {
+    /// What the player plays rising from a keybed showing `range`.
+    #[must_use]
+    pub fn rising(played: &Played, range: (u8, u8), design: Arc<Design>) -> Self {
+        Self {
+            notes: played.notes.clone(),
+            at: played.at,
+            range,
+            design,
+            rising: true,
+            played: None,
+        }
+    }
 }
 
 /// Everything the falling notes draw on a canvas of `size`, in two
@@ -590,12 +677,19 @@ fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
         .max(1.);
     let mut out = Vec::with_capacity(256);
     let mut light = Vec::with_capacity(256);
-    field(&mut out, d, at, size);
+    // The field drifts with a song; under what the player plays, which
+    // draws only while they play, it holds still rather than jump.
+    field(&mut out, d, if show.rising { 0. } else { at }, size);
     lanes(&mut out, d, &keys, show.range, size);
     let hands = show.notes.by_hand(d);
     let back = sparks::reach(&d.particles).max(RELEASE);
-    let near: Vec<&Note> = show.notes.between(at - back, at + AHEAD).collect();
-    let lit = presses(near.iter().copied(), at);
+    let near: Vec<&Note> = if show.rising {
+        show.notes
+            .between(at - AHEAD.max(back), at + 1e-9)
+            .collect()
+    } else {
+        show.notes.between(at - back, at + AHEAD).collect()
+    };
     let place = |key: u8| {
         let &(_, x, kw) = keys.get(usize::from(key.checked_sub(show.range.0)?))?;
         (key <= show.range.1).then_some((x + kw / 2., kw))
@@ -607,16 +701,38 @@ fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
             c.lighten(0.16).scale_chroma(0.9)
         }
     };
+    // Each lit key and its light's colour: the song's, then the player's
+    // under it, on their own clock.
+    let mine = |n: &Note| {
+        glow(tone(
+            d,
+            &Note {
+                voice: PLAYER,
+                ..*n
+            },
+            false,
+        ))
+    };
+    let played: Vec<&Note> = (show.played.as_ref())
+        .map(|p| p.notes.between(p.at - back, p.at + 1e-9).collect())
+        .unwrap_or_default();
+    let mut lit: Vec<(Press<'_>, Color)> = presses(near.iter().copied(), at)
+        .into_iter()
+        .map(|p| (p, glow(tone(d, p.note, hands))))
+        .collect();
+    if let Some(p) = &show.played {
+        let theirs = presses(played.iter().copied(), p.at);
+        lit.extend(theirs.into_iter().map(|p| (p, mine(p.note))));
+    }
     // Light rising from each lit key, behind everything that falls.
     if d.beams.strength > 0. {
-        for p in &lit {
+        for &(p, c) in &lit {
             let Some((cx, kw)) = place(p.note.key) else {
                 continue;
             };
             let v = f64::from(p.note.velocity) / 127.;
             let a = (d.beams.strength * p.level * (0.45 + 0.55 * v) * (1. + 0.5 * flash(p.age)))
                 .min(1.) as f32;
-            let c = glow(tone(d, p.note, hands));
             let (tall, half) = (h * d.beams.height, kw * 0.45);
             let spread = unit * 0.9;
             let cone = Path::polyline(
@@ -643,7 +759,7 @@ fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
     let mut bars = Vec::with_capacity(near.len());
     for sharp in [false, true] {
         for n in near.iter().filter(|n| black(n.key) == sharp) {
-            let Some(b) = bar(&keys, show.range, n, at, size, share(d, n)) else {
+            let Some(b) = bar(&keys, show.range, n, (at, show.rising), size, share(d, n)) else {
                 continue;
             };
             bars.push((*n, b));
@@ -671,13 +787,12 @@ fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
     // The line the notes strike, and the light where each lands.
     strike(&mut out, d, size, unit, show.notes.pedal().depth(at));
     if d.glow.strength > 0. {
-        for p in &lit {
+        for &(p, c) in &lit {
             let Some((cx, _)) = place(p.note.key) else {
                 continue;
             };
             let v = f64::from(p.note.velocity) / 127.;
             let f = flash(p.age) * d.glow.flash;
-            let c = glow(tone(d, p.note, hands));
             let a = d.glow.strength * p.level * (0.4 + 0.6 * v);
             let r = d.glow.radius * unit * (1. + 0.22 * f);
             halo(
@@ -732,6 +847,10 @@ fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
         &color,
         &mut flying,
     );
+    if let Some(p) = &show.played {
+        let (notes, mine) = (played.iter().copied(), &mine);
+        sparks::sparks(notes, p.at, &ground, &d.particles, mine, &mut flying);
+    }
     for s in &flying {
         // A hot point in a soft glow: one shape, its ramp shared by every
         // spark of its colour and brightness.
@@ -753,7 +872,14 @@ fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
     }
     vignette(&mut out, d, size);
     // The pedal over the vignette: it is read, not just seen.
-    pedal(&mut out, d, show.notes.pedal(), at, size, unit);
+    pedal(
+        &mut out,
+        d,
+        show.notes.pedal(),
+        (at, show.rising),
+        size,
+        unit,
+    );
     (out, light)
 }
 
@@ -810,7 +936,14 @@ fn lanes(out: &mut Vec<Draw>, d: &Design, keys: &[(u8, f64, f64)], range: (u8, u
 
 /// The sustain pedal's lane down the left edge: how far down it is, as
 /// the notes fall beside it.
-fn pedal(out: &mut Vec<Draw>, d: &Design, pedal: &Pedal, at: f64, size: Size, unit: f64) {
+fn pedal(
+    out: &mut Vec<Draw>,
+    d: &Design,
+    pedal: &Pedal,
+    (at, rising): (f64, bool),
+    size: Size,
+    unit: f64,
+) {
     let p = &d.pedal;
     if p.strength <= 0. || pedal.is_empty() {
         return;
@@ -821,9 +954,15 @@ fn pedal(out: &mut Vec<Draw>, d: &Design, pedal: &Pedal, at: f64, size: Size, un
     let c = p.color.color();
     let a = p.strength as f32;
     out.push(Draw::fill(rect(0., 0., lane, h), c.with_alpha(a * 0.08)));
+    // Rising, as the player's notes do: what it did lately above the keys.
+    let ahead = |t: f64| if rising { at - t } else { t - at };
     let point =
-        |(t, depth): (f64, f32)| Point::new(lane * f64::from(depth), h - (t - at) * per_second);
-    let profile = pedal.profile(at - AHEAD * 0.1, at + AHEAD);
+        |(t, depth): (f64, f32)| Point::new(lane * f64::from(depth), h - ahead(t) * per_second);
+    let profile = if rising {
+        pedal.profile(at - AHEAD, at + 1e-9)
+    } else {
+        pedal.profile(at - AHEAD * 0.1, at + AHEAD)
+    };
     let (Some(&first), Some(&last)) = (profile.first(), profile.last()) else {
         return;
     };
@@ -1029,6 +1168,7 @@ pub fn waterfall_in(
         at,
         range,
         design,
+        ..Show::default()
     })
     .h(height)
 }
@@ -1150,7 +1290,7 @@ mod tests {
         let size = Size::new(70., 300.);
         let keys = layout(range, size.width);
         // Seven naturals 10 wide; 100 px a second; 0.86 of its key.
-        let c = bar(&keys, range, &note(1., 1.5, 48), 0., size, 0.86).unwrap();
+        let c = bar(&keys, range, &note(1., 1.5, 48), (0., false), size, 0.86).unwrap();
         assert!(
             (c.0 - 0.7).abs() < 1e-9 && (c.2 - 8.6).abs() < 1e-9,
             "{c:?}"
@@ -1160,22 +1300,53 @@ mod tests {
             "{c:?}"
         );
         // A sharp's bar is narrower, over the seam between its naturals.
-        let cs = bar(&keys, range, &note(1., 1.5, 49), 0., size, 0.86).unwrap();
+        let cs = bar(&keys, range, &note(1., 1.5, 49), (0., false), size, 0.86).unwrap();
         assert!(cs.0 > 7. && cs.0 + cs.2 < 13., "{cs:?}");
         // As it sounds, its foot is under the keys, out of sight.
-        let now = bar(&keys, range, &note(1., 1.5, 48), 1.2, size, 0.86).unwrap();
+        let now = bar(&keys, range, &note(1., 1.5, 48), (1.2, false), size, 0.86).unwrap();
         assert!((now.1 - 270.).abs() < 1e-9, "{now:?}");
         assert!((now.1 + now.3 - 300. - BLEED * 10.).abs() < 1e-9, "{now:?}");
         // A note longer than the view runs past its top, out of sight.
-        let long = bar(&keys, range, &note(0., 9., 48), 1., size, 0.86).unwrap();
+        let long = bar(&keys, range, &note(0., 9., 48), (1., false), size, 0.86).unwrap();
         assert!((long.1 + BLEED * 10.).abs() < 1e-9, "{long:?}");
         // Off the keybed, past, or not yet in view: nothing.
-        assert!(bar(&keys, range, &note(1., 1.5, 47), 0., size, 0.86).is_none());
-        assert!(bar(&keys, range, &note(1., 1.5, 60), 0., size, 0.86).is_none());
-        assert!(bar(&keys, range, &note(4., 5., 50), 0., size, 0.86).is_none());
+        assert!(bar(&keys, range, &note(1., 1.5, 47), (0., false), size, 0.86).is_none());
+        assert!(bar(&keys, range, &note(1., 1.5, 60), (0., false), size, 0.86).is_none());
+        assert!(bar(&keys, range, &note(4., 5., 50), (0., false), size, 0.86).is_none());
         // A blink of a note still shows, a quarter of its key tall.
-        let blip = bar(&keys, range, &note(1., 1., 50), 0., size, 0.86).unwrap();
+        let blip = bar(&keys, range, &note(1., 1., 50), (0., false), size, 0.86).unwrap();
         assert!(blip.3 >= 2.5);
+    }
+
+    /// What the player plays rises: a held note grows up out of its key,
+    /// its foot under the keys; once let go it floats up and away.
+    #[test]
+    fn a_played_note_grows_from_its_key_and_floats_away() {
+        let (range, size) = ((48, 59), Size::new(70., 300.));
+        let keys = layout(range, size.width);
+        // 100 px a second; held from 1 s, now 1.5 s.
+        let held = bar(
+            &keys,
+            range,
+            &note(1., f64::INFINITY, 48),
+            (1.5, true),
+            size,
+            0.86,
+        );
+        let held = held.unwrap();
+        assert!(
+            (held.1 - 250.).abs() < 1e-9,
+            "its top half a second up: {held:?}"
+        );
+        assert!(
+            (held.1 + held.3 - 300. - BLEED * 10.).abs() < 1e-9,
+            "{held:?}"
+        );
+        // Let go at 2 s, now 2.5 s: from 150 to 250, clear of the keys.
+        let gone = bar(&keys, range, &note(1., 2., 48), (2.5, true), size, 0.86).unwrap();
+        assert!((gone.1 - 150.).abs() < 1e-9 && (gone.1 + gone.3 - 250.).abs() < 1e-9);
+        // Up past the top once it ended more than the view's time ago.
+        assert!(bar(&keys, range, &note(1., 2., 48), (5.5, true), size, 0.86).is_none());
     }
 
     #[test]
@@ -1185,8 +1356,16 @@ mod tests {
         let small = Size::new(70., 300.);
         let big = Size::new(140., 600.);
         let n = note(1., 1.5, 50);
-        let a = bar(&layout(range, small.width), range, &n, 0.4, small, 0.8).unwrap();
-        let b = bar(&layout(range, big.width), range, &n, 0.4, big, 0.8).unwrap();
+        let a = bar(
+            &layout(range, small.width),
+            range,
+            &n,
+            (0.4, false),
+            small,
+            0.8,
+        )
+        .unwrap();
+        let b = bar(&layout(range, big.width), range, &n, (0.4, false), big, 0.8).unwrap();
         for (x, y) in [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)] {
             assert!((2. * x - y).abs() < 1e-9, "{a:?} {b:?}");
         }
@@ -1300,6 +1479,7 @@ mod tests {
             at,
             range: (36, 107),
             design: design::named(design),
+            ..Show::default()
         };
         let (mut lit, light) = draw(&show, size);
         lit.extend(light);

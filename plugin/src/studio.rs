@@ -31,6 +31,7 @@ pub fn fill(shared: &Shared, app: &mut App) {
 /// hears it.
 pub fn played(shared: &Shared, event: &Event) {
     shared.record.keyboard(event);
+    shared.live.keyboard(event);
     match *event {
         Event::NoteOn { note, .. } => shared.song.practice.press(note.key, true),
         Event::NoteOff(p) => {

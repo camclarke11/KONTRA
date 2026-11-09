@@ -75,6 +75,9 @@ pub struct App {
     pub practice: crate::practice::Practice,
     /// Exporting the song to audio or video ([`crate::export`]).
     pub export: crate::export::Exporting,
+    /// What the player plays: rising from the keys with no song, lighting
+    /// the keys they strike under one ([`waterfall::Played`]).
+    pub played: waterfall::Played,
 }
 
 impl App {
@@ -745,7 +748,8 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
     let up = icon_button(ui, "octave-up", Icon::Right, "Octave up", false);
     let fold = icon_button(ui, "keys-fold", Icon::Down, "Hide the keyboard", false);
-    // A playing song's notes fall onto the keys, unless this hides them.
+    // A playing song's notes fall onto the keys, and with none what the
+    // player plays rises from them, unless this hides them.
     let song = app.song.as_ref().filter(|s| !s.notes.is_empty());
     let notes = button(ui, "song-notes", "Notes", !v.notes_hidden);
     if down.changed {
@@ -757,7 +761,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if fold.changed {
         v.keyboard_hidden = true;
     }
-    if notes.changed && song.is_some() {
+    // With no song, the player's notes take room once they play.
+    let live = song.is_none() && app.played.begun;
+    if notes.changed && (song.is_some() || live) {
         v.notes_hidden = !v.notes_hidden;
     }
     if v.keyboard_hidden {
@@ -765,10 +771,17 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     // While a song's notes fall, the keybed shows the keys it plays,
     // centred in whole octaves; its own octaves wait until they stop.
-    let falls = song.is_some() && !v.notes_hidden;
+    let shows = !v.notes_hidden && (song.is_some() || live);
+    let falls = song.is_some() && shows;
     let low = 12 * v.octave.clamp(0, 5) as u8;
+    // What the player plays rises over a piano's keys, and any past them.
+    let piano = |(a, b): (u8, u8)| (a.min(PIANO.0), b.max(PIANO.1));
     let range = match song.filter(|_| falls).and_then(|s| s.notes.keys()) {
         Some(keys) => waterfall::fit(keys, waterfall::OCTAVES),
+        None if shows => {
+            let keys = app.played.notes.keys().map_or(PIANO, piano);
+            waterfall::fit(keys, waterfall::OCTAVES)
+        }
         None => (low, low + 83),
     };
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
@@ -803,22 +816,26 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         out.push(Action::Practice(hands));
     }
     bar.push(practice.el);
-    if song.is_some() {
-        if falls {
+    if song.is_some() || live {
+        if shows {
             bar.push(design_picker(ui, v));
         }
-        let tip = "Show the song's notes falling onto the keys";
+        let tip = if live {
+            "Show the notes you play rising from the keys"
+        } else {
+            "Show the song's notes falling onto the keys"
+        };
         let on = !v.notes_hidden;
         bar.push(notes.el.tip(tip).a11y(A11y::Toggle { on }));
     }
-    if !falls {
+    if !shows {
         bar.extend([down.el, up.el]);
     }
     bar.push(fold.el);
     let bar = strip(bar);
     // As tall as a third of the window, within reason, easing in and out.
     let window = ui.scene().map_or(0., |s| s.layout.size.height);
-    let tall = if falls {
+    let tall = if shows {
         (window * 0.3).clamp(TEXT * 8., TEXT * 22.)
     } else {
         0.
@@ -832,11 +849,13 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .into_iter()
         .flatten()
         .collect();
+    let look = design::named(&v.design);
+    let lit = song
+        .map(|s| s.notes.lit_in(s.position, &look))
+        .unwrap_or_default();
     let shown = Keys {
         range,
-        lit: song
-            .map(|s| s.notes.lit_in(s.position, &design::named(&v.design)))
-            .unwrap_or_default(),
+        lit: waterfall::with_played(lit, &app.played, &look, song.is_none()),
         held: match focused.and_then(|p| p.face.as_ref()?.tree.key_pressed.as_ref()) {
             Some(pressed) => pressed.clone(),
             None => v.playing.into_iter().collect(),
@@ -901,12 +920,26 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     // Practice marks the keys to press over the notes and the keys.
     let marks = falls && app.practice.marks();
     // The notes fall in a lane as wide as the keybed, right above it, so
-    // each lands on its key; the wheels sit beside the keys alone.
+    // each lands on its key, the keys the player strikes lit under them;
+    // with no song, what the player plays rises from the keys instead.
+    // The wheels sit beside the keys alone.
     let mut keys = Vec::new();
     if tall > 0.5 {
-        let (notes, at) = song.map_or_else(Default::default, |s| (s.notes.clone(), s.position));
-        let look = design::named(&app.view.design);
-        let lane = waterfall::waterfall_in(&notes, at, range, tall, look).id("song-falling");
+        let lane = match song {
+            Some(s) => waterfall::falling(waterfall::Show {
+                notes: s.notes.clone(),
+                at: s.position,
+                range,
+                design: look,
+                played: Some(app.played.clone()),
+                ..waterfall::Show::default()
+            })
+            .h(tall)
+            .id("song-falling"),
+            None => waterfall::falling(waterfall::Show::rising(&app.played, range, look))
+                .h(tall)
+                .id("played-rising"),
+        };
         keys.push(if marks {
             let over = crate::practice::lane(&app.practice, range, tall);
             stack![lane, over].w(Len::Pct(100.))
@@ -930,6 +963,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     ]
     .animate_layout_with(quick())
 }
+
+/// A piano's 88 keys, A-1 to C7 (middle C as C3).
+const PIANO: (u8, u8) = (21, 108);
 
 /// Which [`design`] the falling notes are drawn in: a dropdown of those
 /// that ship, then the user's own.

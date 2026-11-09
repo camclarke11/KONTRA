@@ -44,7 +44,7 @@ const KEYBOARD: u8 = u8::MAX;
 const CAPTURED: usize = 16_384;
 
 /// A channel message: status, then data.
-type Message = [u8; 3];
+pub(crate) type Message = [u8; 3];
 
 /// What the audio thread hands the tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,7 +71,7 @@ enum Command {
 
 /// `e` as a MIDI 1.0 channel message and the port it came on; None for
 /// what a MIDI file does not hold (note expressions, chokes, system).
-fn message(e: &Event) -> Option<(u8, Message)> {
+pub(crate) fn message(e: &Event) -> Option<(u8, Message)> {
     let seven = |x: f64| (x.clamp(0.0, 1.0) * 127.0).round() as u8;
     let port = |p: i32| u8::try_from(p).unwrap_or(0);
     let pattern = |p: &kontra_host::rack::HostPattern| {

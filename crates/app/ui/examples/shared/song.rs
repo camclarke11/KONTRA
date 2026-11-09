@@ -223,6 +223,7 @@ pub fn stage(ui: &mut Ui, notes: &Notes, d: &Arc<Design>, at: f64, (w, h): (f64,
         at,
         range,
         design: d.clone(),
+        ..Show::default()
     };
     let keys = Keys {
         range,

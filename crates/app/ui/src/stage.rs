@@ -290,7 +290,12 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .collect();
     let keys = Keys {
         range,
-        lit: song.notes.lit_in(song.position, &look),
+        lit: waterfall::with_played(
+            song.notes.lit_in(song.position, &look),
+            &app.played,
+            &look,
+            false,
+        ),
         held: app.view.playing.into_iter().collect(),
         spans,
         ..Keys::default()
@@ -302,13 +307,16 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .into_iter()
             .map(|(n, on)| Action::Note(n, on)),
     );
-    let lane = waterfall::waterfall_in(
-        &song.notes,
-        song.position,
+    // The keys the player strikes light under the song's.
+    let lane = waterfall::falling(waterfall::Show {
+        notes: song.notes.clone(),
+        at: song.position,
         range,
-        (size.height - bed).max(0.),
-        look,
-    )
+        design: look,
+        played: Some(app.played.clone()),
+        ..waterfall::Show::default()
+    })
+    .h((size.height - bed).max(0.))
     .id("stage-falling");
     let mut layers = vec![
         col![lane, keybed.el.grow(0).w(Len::Pct(100.))]

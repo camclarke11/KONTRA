@@ -627,6 +627,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // While the keyboard follows a song, every display refresh draws.
     let following = Arc::new(AtomicBool::new(false));
     let follow = Arc::clone(&following);
+    // What the player plays, rising from the keys ([`crate::live`]).
+    let mut tracker = crate::live::Tracker::default();
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
@@ -645,6 +647,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
         app.song = player.song(&p.shared.song, screen.full());
+        app.played = tracker.played(&p.shared.live, Instant::now());
         crate::studio::fill(&p.shared, &mut app);
         // Space, F and Escape, which the window handed over.
         let mut changed = Vec::new();
@@ -662,8 +665,12 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         changed.extend(response.changed);
         keys.loaded.store(app.song.is_some(), Ordering::Release);
         keys.stage.store(app.view.stage.open, Ordering::Release);
-        let moving = player.moving(Instant::now());
-        following.store(app.follows_song() && moving, Ordering::Relaxed);
+        let now = Instant::now();
+        let moving = player.moving(now);
+        // What the player plays moves too, while the keys show and it does.
+        let shown = !app.view.keyboard_hidden || app.view.stage.open;
+        let rising = shown && tracker.moving(now);
+        following.store((app.follows_song() && moving) || rising, Ordering::Relaxed);
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
         // the frame after it: ask for that one, or it waits for more input.
@@ -712,7 +719,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                     continue;
                 }
                 // Panic stops a song too, then ends every note as before.
-                Action::Panic => p.shared.song.stop(),
+                Action::Panic => {
+                    p.shared.song.stop();
+                    tracker.clear(Instant::now());
+                }
                 Action::Songs(app::SongAction::Play(path)) => {
                     p.shared.request(Request::Song(path));
                     continue;
@@ -814,6 +824,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
             | keying.waiting()
             // Practice marks a key struck or a wrong one, song moving or not.
             | watched.shared.song.practice.changed()
+            // A key the player struck: drawn as it is.
+            | watched.shared.live.waiting()
     })
     // Space, F and Escape for the transport and the Stage, before MUI and
     // the host see them; the rest go on as before.

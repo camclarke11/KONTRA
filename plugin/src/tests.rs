@@ -117,6 +117,38 @@ fn a_dropped_midi_file_plays_to_its_end() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// What the player plays reaches the editor, to rise from its keys; a
+/// song's notes do not, as they fall onto them already.
+#[test]
+fn what_the_player_plays_reaches_the_editor_and_a_songs_notes_do_not() {
+    let empty = Saved {
+        version: kontra_host::state::VERSION,
+        parts: Vec::new(),
+    };
+    let (params, mut dsp) = activate(&empty.write());
+    let dir = std::env::temp_dir().join(format!("kontra-live-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scale.mid");
+    std::fs::write(&path, crate::song::tests::song()).unwrap();
+    params.shared.request(crate::Request::Song(path));
+    Tick.run(&params);
+    let mut tracker = crate::live::Tracker::default();
+    for _ in 0..(RATE as usize / BLOCK) {
+        block(&params, &mut dsp, &[]);
+    }
+    let shown = tracker.played(&params.shared.live, std::time::Instant::now());
+    assert!(!shown.begun && shown.notes.is_empty(), "the song's own");
+    block(&params, &mut dsp, &[note(true, 72)]);
+    let shown = tracker.played(&params.shared.live, std::time::Instant::now());
+    assert!(shown.begun);
+    let keys: Vec<u8> = shown.notes.sounding(shown.at).map(|n| n.key).collect();
+    assert_eq!(keys, [72]);
+    block(&params, &mut dsp, &[note(false, 72)]);
+    let shown = tracker.played(&params.shared.live, std::time::Instant::now());
+    assert_eq!(shown.notes.sounding(shown.at).count(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 fn note(on: bool, key: u8) -> moose::prelude::Event {
     let body = if on {
         EventBody::NoteOn {
