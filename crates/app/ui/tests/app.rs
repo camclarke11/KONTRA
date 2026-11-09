@@ -5,6 +5,7 @@
 use kontra_ui::app::{
     self, Action, App, Envelope, Face, Format, Library, Param, Part, PartTab, Sound,
 };
+use kontra_ui::waterfall::{Note, Notes};
 use mui::prelude::{Buttons, Input, Point, PointerInput, Size, Ui};
 
 fn frame(ui: &mut Ui, app: &mut App, input: Input) -> (Vec<Action>, bool) {
@@ -131,12 +132,79 @@ fn the_header_plays_and_stops_a_midi_file() {
         name: "Clair de Lune.mid".into(),
         position: 65.0,
         length: 312.0,
+        notes: Notes::default(),
     });
     settle(&mut ui, &mut app);
     let scene = ui.scene().unwrap();
     assert!(scene.surface("song-play").is_none());
     assert!(scene.surface("song").is_some());
     assert_eq!(click(&mut ui, &mut app, "song-stop"), [Action::StopSong]);
+}
+
+/// While a song plays its notes fall onto the keyboard in a lane exactly
+/// as wide as the keybed, which shows every key the song plays; "Notes"
+/// hides them and gives the keybed back its octaves; once the song ends
+/// the keyboard is as it was and the editor asks for no more frames.
+#[test]
+fn a_playing_songs_notes_fall_onto_the_keys() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    settle(&mut ui, &mut app);
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let resting = frame_of(&ui, "keybed").unwrap();
+    assert!(!app.follows_song());
+    // A song above the keybed's C-2..B4: it moves to C1..B7 to show it.
+    let note = |start: f64, key: u8| Note {
+        start,
+        end: start + 0.5,
+        key,
+        velocity: 100,
+        voice: 0,
+    };
+    app.song = Some(app::Song {
+        name: "runs.mid".into(),
+        position: 1.2,
+        length: 4.0,
+        notes: Notes::new(vec![note(1.0, 41), note(1.5, 97), note(3.0, 60)]),
+    });
+    settle(&mut ui, &mut app);
+    assert!(app.follows_song(), "the host draws every refresh");
+    let lane = frame_of(&ui, "song-falling").expect("the notes fall");
+    let bed = frame_of(&ui, "keybed").unwrap();
+    assert!((lane.x - bed.x).abs() < 0.5 && (lane.size.width - bed.size.width).abs() < 0.5);
+    assert!(
+        (lane.y + lane.size.height - bed.y).abs() < 0.5,
+        "{lane:?} {bed:?}"
+    );
+    assert!(lane.size.height >= 90., "{lane:?}");
+    assert!(
+        (bed.size.height - resting.size.height).abs() < 0.5,
+        "the keys keep their size"
+    );
+    // The keybed follows the song, so its octave arrows wait.
+    assert!(frame_of(&ui, "octave-up").is_none());
+    assert!(
+        click(&mut ui, &mut app, "song-notes").is_empty(),
+        "the editor's own"
+    );
+    assert!(app.view.notes_hidden);
+    assert!(frame_of(&ui, "song-falling").is_none());
+    assert!(frame_of(&ui, "octave-up").is_some());
+    assert!(app.follows_song(), "its keys still light as they sound");
+    click(&mut ui, &mut app, "song-notes");
+    assert!(frame_of(&ui, "song-falling").is_some());
+    assert!(frame_of(&ui, "octave-up").is_none());
+    // The song ends: the keyboard as it was, and not a frame more.
+    app.song = None;
+    settle(&mut ui, &mut app);
+    assert!(!app.follows_song());
+    assert!(frame_of(&ui, "song-falling").is_none());
+    assert!(frame_of(&ui, "octave-up").is_some());
+    assert_eq!(frame_of(&ui, "keybed"), Some(resting));
+    assert!(
+        !frame(&mut ui, &mut app, Input::default()).1,
+        "stopped: the host draws nothing until something changes"
+    );
 }
 
 #[test]

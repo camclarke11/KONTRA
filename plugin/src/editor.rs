@@ -4,8 +4,9 @@
 //! the tick to carry out.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use kontra_host::browser::Browser;
 use kontra_host::rack::{Event, HostNote, HostPattern, Mix, Rack};
@@ -13,6 +14,7 @@ use kontra_host::state::SavedView;
 use kontra_host::ui::Library;
 use kontra_protocol::Stats;
 use kontra_ui::app::{self, Action, App, Face, Part};
+use kontra_ui::waterfall::Clock;
 use kontra_ui::{Pictures, layout};
 use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
@@ -597,6 +599,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
     let mut buttons = None;
+    let mut clock = Clock::default();
+    // While the keyboard follows a song, every display refresh draws.
+    let following = Arc::new(AtomicBool::new(false));
+    let follow = Arc::clone(&following);
     MuiEditor::new(params, kontra_ui::ui(), (1180, 780), move |ui, bridge| {
         // On opening, and whenever the host loads a state: its view.
         let now = p.shared.restored.load(Ordering::Acquire);
@@ -614,12 +620,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         crate::look::parts(&mut app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
-        app.song = (p.shared.song.status()).map(|(name, position, length)| app::Song {
-            name,
-            position,
-            length,
-        });
+        app.song = song(&p.shared.song, &mut clock);
         let response = kontra_ui::app::view(ui, &mut app);
+        let moving = clock.moving(Instant::now());
+        following.store(app.follows_song() && moving, Ordering::Relaxed);
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
         // the frame after it: ask for that one, or it waits for more input.
@@ -739,12 +743,31 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     .changed(move || {
         // Only events draw: a change the tick or the view marked, or a
         // picture that arrived. Nothing polled (pictures pending, a load
-        // under way) asks for frames, so nothing stuck can spin them.
-        watched.shared.dirty.swap(false, Ordering::AcqRel) | kontra_ui::pictures::arrived()
+        // under way) asks for frames, so nothing stuck can spin them. A
+        // song the keyboard follows moves every frame while the audio
+        // thread moves it; the tick wakes the editor if it starts again.
+        watched.shared.dirty.swap(false, Ordering::AcqRel)
+            | kontra_ui::pictures::arrived()
+            | follow.load(Ordering::Relaxed)
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
     .into_editor()
+}
+
+/// The song playing, as the editor shows it: where the audio thread says
+/// it is, moved on smoothly by `clock` between its blocks.
+fn song(songs: &crate::song::Songs, clock: &mut Clock) -> Option<app::Song> {
+    let Some((name, position, length)) = songs.status() else {
+        *clock = Clock::default();
+        return None;
+    };
+    Some(app::Song {
+        name,
+        position: clock.at(position, Instant::now()).min(length),
+        length,
+        notes: songs.notes(),
+    })
 }
 
 /// The port the editor's notes come from: no host port, so a host note-off

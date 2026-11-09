@@ -108,6 +108,8 @@ pub struct SavedView {
     pub tab: u8,
     pub browser_hidden: bool,
     pub keyboard_hidden: bool,
+    /// A playing song's notes not shown falling onto the keyboard.
+    pub notes_hidden: bool,
     pub keys_hidden: bool,
     pub mixer_wide: bool,
     pub octave: i8,

@@ -200,6 +200,54 @@ MIT/Apache-2.0 licensing; this review has not independently established
 the authorship and redistribution rights of each audio recording.
 Preserve their upstream provenance and verify it for source redistribution.
 
+## Falling notes: MIDIVisualizer and Magenta.js
+
+`crates/app/ui/src/waterfall.rs` (a playing song's notes falling onto the
+keyboard) follows the look of two permissively licensed visualizers,
+reviewed on 2026-11-09. It is a Rust port of their drawing approach and
+parameters onto KONTRA's own keybed geometry and vello canvas; no source
+file was copied.
+
+- [MIDIVisualizer](https://github.com/kosua20/MIDIVisualizer) by Simon
+  Rodriguez, MIT, at commit `1c942137679bc1846fd278d1e57ff91c71e94b72`.
+  Read: `resources/shaders/notes.vert`, `notes.frag`, `majorKeys.frag`,
+  `minorKeys.frag`, `flashes.vert`, `flashes.frag` and the defaults in
+  `src/rendering/State.cpp`. Used: a note's bar a little narrower than its
+  key (0.9 of it there) with softly rounded corners and a brighter rim (edge width 0.1, brightness
+  1.05); a sharp's bar narrower and darker (0.8 of a natural's colour);
+  keys lit in their note's colour while it sounds; a halo where a sounding
+  note meets the keys, full inside 0.14 of its radius and gone at its edge.
+  Not used: its shaders, textures, particles, score lines or colour sets.
+- [Magenta.js](https://github.com/magenta/magenta-js), Apache-2.0, at
+  commit `96bad8837da43beb53f2e5aaea9f29f3db4bdddb`. Read:
+  `music/src/core/visualizer.ts` (`WaterfallSVGVisualizer`). Used: the idea
+  that a louder note is drawn stronger (it raises opacity; KONTRA raises
+  lightness and chroma) and that a sounding note is drawn brighter.
+- [Neothesia](https://github.com/PolyMeilex/Neothesia) is GPL-3.0; only
+  its licence was checked, and none of its code was read or used.
+
+MIDIVisualizer's notice:
+
+Copyright (c) 2020 Simon Rodriguez
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## CORE-MATH binary32 logarithm
 
 The retired v2 safe Rust binary32 logarithm in

@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
 use kontra_host::rack::{Event, HostNote, HostPattern};
+use kontra_ui::waterfall::{Note, Notes};
 
 use crate::folder::{Dialog, Pick};
 use crate::lock;
@@ -43,6 +44,8 @@ pub struct Song {
     events: Vec<(f64, Message)>,
     /// Seconds to its last event.
     pub length: f64,
+    /// Its notes, for the editor to show falling onto the keyboard.
+    pub notes: Notes,
 }
 
 impl Song {
@@ -58,23 +61,63 @@ impl Song {
 
     /// The song in `bytes`, a Standard MIDI File, as `name`.
     pub fn read(name: String, bytes: &[u8]) -> Result<Self, String> {
-        let events: Vec<(f64, Message)> = timeline(bytes)?
+        let timeline: Vec<(f64, u16, Message)> = timeline(bytes)?
             .into_iter()
-            .filter(|&(_, [status, ..])| status & 15 != DRUMS)
+            .filter(|&(_, _, [status, ..])| status & 15 != DRUMS)
             .collect();
-        let notes = events
-            .iter()
-            .any(|&(_, [status, _, velocity])| status & 0xF0 == 0x90 && velocity > 0);
-        if !notes {
+        let length = timeline.last().map_or(0.0, |&(time, ..)| time);
+        let notes = notes(&timeline, length);
+        if notes.is_empty() {
             return Err("it has no notes outside the drum channel (10) to play".into());
         }
-        let length = events.last().map_or(0.0, |&(time, _)| time);
         Ok(Self {
             name,
-            events,
+            events: timeline.into_iter().map(|(time, _, m)| (time, m)).collect(),
             length,
+            notes,
         })
     }
+}
+
+/// The notes in `timeline` as the editor shows them: each from its
+/// note-on to its key's next note-off or note-on on that channel (the
+/// song's end if neither comes), coloured by voice, its track and channel,
+/// numbered in that order (a piano file's right hand first, then its left).
+fn notes(timeline: &[(f64, u16, Message)], length: f64) -> Notes {
+    let on = |[status, _, velocity]: Message| status & 0xF0 == 0x90 && velocity > 0;
+    let mut voices: Vec<(u16, u8)> = (timeline.iter())
+        .filter(|e| on(e.2))
+        .map(|&(_, track, [status, ..])| (track, status & 15))
+        .collect();
+    voices.sort_unstable();
+    voices.dedup();
+    // The note each key of each channel has open, by index into `out`.
+    let mut open = vec![None; 16 * 128];
+    let mut out: Vec<Note> = Vec::new();
+    for &(time, track, message @ [status, key, velocity]) in timeline {
+        let channel = status & 15;
+        if !matches!(status & 0xF0, 0x80 | 0x90) {
+            continue;
+        }
+        let Some(slot) = open.get_mut(usize::from(channel) * 128 + usize::from(key)) else {
+            continue;
+        };
+        if let Some(n) = slot.take().and_then(|i: usize| out.get_mut(i)) {
+            n.end = time;
+        }
+        if on(message) {
+            *slot = Some(out.len());
+            let voice = voices.binary_search(&(track, channel)).unwrap_or(0);
+            out.push(Note {
+                start: time,
+                end: length,
+                key,
+                velocity,
+                voice: u8::try_from(voice).unwrap_or(u8::MAX),
+            });
+        }
+    }
+    Notes::new(out)
 }
 
 /// `message` as the engine takes it: notes on the song's port, the rest as
@@ -154,13 +197,14 @@ impl Reader<'_> {
 enum Said {
     /// Microseconds per quarter note from here on.
     Tempo(u32),
-    Message(Message),
+    /// A channel message, and the track it is in.
+    Message(u16, Message),
 }
 
 /// The file's channel messages in order, with their time in seconds by its
-/// tempo map: format 0 and 1 (format 2's patterns play together), ticks per
-/// quarter note or SMPTE frames.
-fn timeline(bytes: &[u8]) -> Result<Vec<(f64, Message)>, String> {
+/// tempo map and the track they are in: format 0 and 1 (format 2's
+/// patterns play together), ticks per quarter note or SMPTE frames.
+fn timeline(bytes: &[u8]) -> Result<Vec<(f64, u16, Message)>, String> {
     if bytes.get(..4) != Some(b"MThd".as_slice()) {
         return Err("it is not a Standard MIDI File".into());
     }
@@ -178,6 +222,7 @@ fn timeline(bytes: &[u8]) -> Result<Vec<(f64, Message)>, String> {
     };
 
     let mut said = Vec::new();
+    let mut tracks = 0u16;
     let mut at = header.checked_add(8).ok_or_else(truncated)?;
     while let (Some(id), Some(len)) = (bytes.get(at..at + 4), big_endian(bytes, at + 4, 4)) {
         let start = at + 8;
@@ -185,7 +230,8 @@ fn timeline(bytes: &[u8]) -> Result<Vec<(f64, Message)>, String> {
         let end = start.saturating_add(len).min(bytes.len());
         at = end.max(start);
         if id == b"MTrk" {
-            track(bytes.get(start..end).unwrap_or_default(), &mut said)?;
+            track(bytes.get(start..end).unwrap_or_default(), tracks, &mut said)?;
+            tracks = tracks.saturating_add(1);
         }
     }
     // Stable: what one tick holds keeps the file's order (tempo first).
@@ -200,14 +246,14 @@ fn timeline(bytes: &[u8]) -> Result<Vec<(f64, Message)>, String> {
         last = tick;
         match what {
             Said::Tempo(t) => tempo = f64::from(t),
-            Said::Message(m) => out.push((time, m)),
+            Said::Message(track, m) => out.push((time, track, m)),
         }
     }
     Ok(out)
 }
 
-/// One track's tempo changes and channel messages, at their tick, into `out`.
-fn track(bytes: &[u8], out: &mut Vec<(usize, Said)>) -> Result<(), String> {
+/// Track `n`'s tempo changes and channel messages, at their tick, into `out`.
+fn track(bytes: &[u8], n: u16, out: &mut Vec<(usize, Said)>) -> Result<(), String> {
     let mut r = Reader { bytes, at: 0 };
     let mut tick = 0usize;
     let mut running = 0u8;
@@ -258,7 +304,7 @@ fn track(bytes: &[u8], out: &mut Vec<(usize, Said)>) -> Result<(), String> {
                 } else {
                     r.byte()?
                 };
-                out.push((tick, Said::Message([status, data & 0x7F, second & 0x7F])));
+                out.push((tick, Said::Message(n, [status, data & 0x7F, second & 0x7F])));
             }
             _ => {
                 return Err(format!(
@@ -372,6 +418,8 @@ pub struct Songs {
     epoch: Instant,
     /// What plays: its name and length in seconds, set as it starts.
     title: Mutex<Option<(String, f64)>>,
+    /// What plays' notes, for the editor.
+    notes: Mutex<Notes>,
     /// The folder the last song came from, where the picker opens.
     folder: Mutex<Option<PathBuf>>,
     /// The second the header last showed: the tick redraws as it moves.
@@ -391,6 +439,7 @@ impl Default for Songs {
             origin: AtomicI64::new(0),
             epoch: Instant::now(),
             title: Mutex::new(None),
+            notes: Mutex::new(Notes::default()),
             folder: Mutex::new(None),
             shown: AtomicU32::new(u32::MAX),
             autoplayed: AtomicBool::new(false),
@@ -408,8 +457,10 @@ impl Songs {
     }
 
     /// Plays `song`, replacing what plays.
-    pub fn play(&self, song: Song) {
+    pub fn play(&self, mut song: Song) {
         *lock(&self.title) = Some((song.name.clone(), song.length));
+        // The audio thread has no use for them.
+        *lock(&self.notes) = std::mem::take(&mut song.notes);
         self.stamp(0, 0, 1.0);
         self.playing.store(true, Ordering::Release);
         // Full only if the audio thread has stopped: nothing would play it.
@@ -482,6 +533,11 @@ impl Songs {
         self.origin.store(origin, Ordering::Release);
         self.rendered
             .store((end as f64 / rate).to_bits(), Ordering::Release);
+    }
+
+    /// The notes of the song playing, or the last one played.
+    pub fn notes(&self) -> Notes {
+        lock(&self.notes).clone()
     }
 
     /// On the tick: frees songs the audio thread is done with; true when
@@ -646,6 +702,62 @@ pub(crate) mod tests {
         // G lasts a quarter at 60 BPM: a second.
         assert!((song.length - 3.0).abs() < 1e-9, "{}", song.length);
         assert_eq!(song.events.first().map(|e| e.1), Some([0xB0, 64, 127]));
+    }
+
+    #[test]
+    fn notes_pair_by_key_and_take_their_voice_from_track_and_channel() {
+        let song = Song::read("a.mid".into(), &song()).unwrap();
+        let seen: Vec<(f64, f64, u8, u8)> = song
+            .notes
+            .between(0.0, 10.0)
+            .map(|n| (n.start, n.end, n.key, n.voice))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (0.0, 0.5, 60, 0),
+                (0.5, 1.0, 62, 0),
+                (1.0, 1.5, 64, 0),
+                (1.5, 2.0, 65, 0),
+                (2.0, 3.0, 67, 0)
+            ],
+            "the drum hit is not among them"
+        );
+        // Two hands on one channel, in two tracks: a key struck again ends
+        // its last note; a note never released lasts to the end.
+        let right = track(&[
+            (0, &[0x90, 60, 100]),
+            (240, &[0x90, 60, 80]),
+            (480, &[0x80, 60, 0]),
+            (960, &[0x80, 60, 0]),
+        ]);
+        let left = track(&[(0, &[0x90, 48, 50]), (720, &[0xB0, 64, 0])]);
+        let two = Song::read("b.mid".into(), &file(1, 480, &[right, left])).unwrap();
+        let seen: Vec<(f64, f64, u8, u8, u8)> = two
+            .notes
+            .between(0.0, 10.0)
+            .map(|n| (n.start, n.end, n.key, n.velocity, n.voice))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (0.0, 0.25, 60, 100, 0),
+                (0.0, 1.0, 48, 50, 1),
+                (0.25, 0.5, 60, 80, 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_editor_keeps_a_songs_notes_and_the_audio_thread_does_not() {
+        let songs = Songs::default();
+        assert!(songs.notes().is_empty());
+        songs.play(Song::read("a.mid".into(), &song()).unwrap());
+        assert_eq!(songs.notes().len(), 5);
+        assert_eq!(songs.notes().keys(), Some((60, 67)));
+        let mut now = None;
+        play(&songs, &mut now, 512, 1);
+        assert!(now.as_ref().is_some_and(|p| p.song.notes.is_empty()));
     }
 
     #[test]
