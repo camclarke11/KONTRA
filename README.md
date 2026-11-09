@@ -1,5 +1,22 @@
 # KONTRA
 
+> **This is camclarke11's fork of [KONTRA](https://github.com/DerpcatMusic/KONTRA), version 3.0.0-cam.1**, built for playing
+> piano libraries on an Apple Silicon Mac. On top of upstream it adds:
+>
+> - **MIDI songs:** play a MIDI file into the rack with its notes falling onto the keys (themes, glow, a pedal lane),
+>   a transport in the keyboard bar (speed, transpose, A–B loop, hand mutes, metronome, count-in) and a full-window Stage.
+> - **A Songs tab** of MIDI folders with favourites and recents, and optional auto-pedal, humanise, chord rolls and
+>   velocity curves for rough files.
+> - **Practice** (the song waits for your hand), **Record** to MIDI, and **Export** to WAV or MP4.
+> - **Live notes:** what you play rises from the keys as you play it.
+> - **Transcribe a recording:** a piano recording becomes a MIDI song (ByteDance's piano transcription, run in Rust;
+>   see [tools/transcribe-model](tools/transcribe-model/README.md)).
+> - **MIDI Out:** the song and your playing on a MIDI port named KONTRA, for instruments KONTRA doesn't host.
+> - Sustain-pedal behaviour closer to Kontakt's, and MIDI devices plugged in after launch now seen on macOS.
+>
+> Build and install it as a Mac app with `tools/mac-app/build-app.sh`. The download links below are upstream's
+> builds, without these changes.
+
 **One free, open-source sampler for the libraries you paid for.**
 
 Under the hood it is **one engine**: a single universal set of sampler, synthesis and effect processing that is configured to match each emulated product exactly. Kontakt and UVI/Falcon support are extensions that map their formats onto it. See [docs/ENGINE.md](docs/ENGINE.md).

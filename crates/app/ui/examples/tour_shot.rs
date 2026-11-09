@@ -176,7 +176,7 @@ fn songbook(name: &str) -> Songbook {
 /// A fresh editor: nothing scanned, nothing loaded.
 fn first_run() -> App {
     App {
-        build: "KONTRA 3.0.0-dev (c8035dcff)".into(),
+        build: "KONTRA 3.0.0-cam.1 (e4bec7a5d)".into(),
         ..App::default()
     }
 }

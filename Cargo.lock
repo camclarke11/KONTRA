@@ -2505,7 +2505,7 @@ dependencies = [
 
 [[package]]
 name = "kontra-plugin"
-version = "3.0.0-dev"
+version = "3.0.0-cam.1"
 dependencies = [
  "clap-sys",
  "crossbeam-queue",
