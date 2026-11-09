@@ -598,11 +598,17 @@ fn song_control(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 /// whose width is not known yet). An export's progress takes their room.
 const LOADED: f64 = 900.;
 const ROOMY: f64 = 1280.;
+/// The room an export's progress and its Cancel take beside Export.
+const EXPORTING: f64 = 260.;
 
 /// Whether the window is `wide` enough for a readout, with room left for
 /// an export's progress while one runs.
 fn fits(app: &App, wide: f64) -> bool {
-    let busy = if app.export.job.is_some() { 260. } else { 0. };
+    let busy = if app.export.job.is_some() {
+        EXPORTING
+    } else {
+        0.
+    };
     app.width >= wide + busy
 }
 
