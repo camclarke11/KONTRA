@@ -16,6 +16,8 @@ pub struct Keys {
     pub range: (u8, u8),
     /// Notes sounding now.
     pub held: Vec<u8>,
+    /// Keys a playing song sounds now, each in its note's colour.
+    pub lit: Vec<(u8, Color)>,
     /// Each part's key span and colour: a light tint over the keys it plays.
     pub spans: Vec<(u8, u8, Color)>,
     /// The focused part's keyswitches, each in its articulation's colour.
@@ -31,7 +33,7 @@ const BLACK: [bool; 12] = [
     false, true, false, true, false, false, true, false, true, false, true, false,
 ];
 
-fn black(note: u8) -> bool {
+pub(crate) fn black(note: u8) -> bool {
     BLACK.get(usize::from(note % 12)).copied().unwrap_or(false)
 }
 
@@ -46,7 +48,7 @@ pub fn note_name(note: u8) -> String {
 }
 
 /// Where each key of `range` sits in a keybed `w` wide: (note, x, width).
-fn layout(range: (u8, u8), w: f64) -> Vec<(u8, f64, f64)> {
+pub(crate) fn layout(range: (u8, u8), w: f64) -> Vec<(u8, f64, f64)> {
     let whites = (range.0..=range.1).filter(|&n| !black(n)).count().max(1);
     let kw = w / whites as f64;
     let mut x = 0.;
@@ -127,6 +129,7 @@ pub fn keyboard(
         };
         let all = layout(keys.range, s.width);
         let held = |n: u8| keys.held.contains(&n);
+        let lit = |n: u8| keys.lit.iter().find(|k| k.0 == n).map(|k| k.1);
         // A keyswitch takes its articulation's colour; a key a part plays
         // is tinted lightly, the first part listed winning.
         let switch = |n: u8| keys.switches.iter().find(|s| s.0 == n).map(|s| s.1);
@@ -170,6 +173,7 @@ pub fn keyboard(
             let grey = Color::oklch(0.64, 0., 0.);
             let face = match (held(n), switch(n), tint(n)) {
                 (true, ..) => accent(),
+                _ if let Some(c) = lit(n) => c.with_lightness(0.8),
                 _ if let Some(c) = script(n) => c,
                 (_, Some(c), _) => c.with_lightness(0.9).scale_chroma(0.5),
                 (.., Some(c)) => c.with_lightness(0.68).scale_chroma(0.25),
@@ -181,6 +185,7 @@ pub fn keyboard(
             let grey = Color::oklch(0.2, 0., 0.);
             let face = match (held(n), switch(n), tint(n)) {
                 (true, ..) => Color::oklch(0.6, 0., 0.),
+                _ if let Some(c) = lit(n) => c.with_lightness(0.58),
                 _ if let Some(c) = script(n) => c,
                 (_, Some(c), _) => c.with_lightness(0.32).scale_chroma(0.7),
                 (.., Some(c)) => c.with_lightness(0.22).scale_chroma(0.25),

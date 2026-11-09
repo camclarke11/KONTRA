@@ -24,6 +24,7 @@ use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
 use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
+use crate::waterfall::{self, Notes};
 
 /// Everything the editor shows. The host fills the data; `view` is the
 /// editor's own state and survives a reload of the rest.
@@ -64,6 +65,16 @@ pub struct App {
     pub song: Option<Song>,
 }
 
+impl App {
+    /// Whether the keyboard follows a playing song, its notes falling and
+    /// its keys lit as they sound: the host asks for a frame every display
+    /// refresh while it does, and for none once the song ends.
+    #[must_use]
+    pub fn follows_song(&self) -> bool {
+        self.song.is_some() && !self.view.keyboard_hidden
+    }
+}
+
 /// A MIDI file playing, as the header shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Song {
@@ -73,6 +84,8 @@ pub struct Song {
     pub position: f64,
     /// How long it is, in seconds.
     pub length: f64,
+    /// Its notes, falling onto the keyboard as it plays.
+    pub notes: Notes,
 }
 
 /// Where a load lands: a new part, or part `n` it replaces.
@@ -293,6 +306,8 @@ pub struct View {
     /// Articulations listed without their keys.
     pub keys_hidden: bool,
     pub keyboard_hidden: bool,
+    /// A playing song's notes not shown falling onto the keyboard.
+    pub notes_hidden: bool,
     /// Octaves the keybed is moved from C-2 to B4.
     pub octave: i8,
     pub playing: Option<u8>,
@@ -696,6 +711,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
     let up = icon_button(ui, "octave-up", Icon::Right, "Octave up", false);
     let fold = icon_button(ui, "keys-fold", Icon::Down, "Hide the keyboard", false);
+    // A playing song's notes fall onto the keys, unless this hides them.
+    let song = app.song.as_ref().filter(|s| !s.notes.is_empty());
+    let notes = button(ui, "song-notes", "Notes", !v.notes_hidden);
     if down.changed {
         v.octave = (v.octave - 1).max(0);
     }
@@ -705,22 +723,42 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if fold.changed {
         v.keyboard_hidden = true;
     }
+    if notes.changed && song.is_some() {
+        v.notes_hidden = !v.notes_hidden;
+    }
     if v.keyboard_hidden {
         return spacer().h(0);
     }
+    // While a song's notes fall, the keybed shows the keys it plays,
+    // centred in whole octaves; its own octaves wait until they stop.
+    let falls = song.is_some() && !v.notes_hidden;
     let low = 12 * v.octave.clamp(0, 5) as u8;
-    let range = (low, low + 83);
+    let range = match song.filter(|_| falls).and_then(|s| s.notes.keys()) {
+        Some(keys) => waterfall::fit(keys, waterfall::OCTAVES),
+        None => (low, low + 83),
+    };
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
-    let bar = strip(vec![
-        section("Keyboard"),
-        label,
-        spacer(),
-        down.el,
-        up.el,
-        fold.el,
-    ]);
+    let mut bar = vec![section("Keyboard"), label, spacer()];
+    if song.is_some() {
+        let tip = "Show the song's notes falling onto the keys";
+        let on = !v.notes_hidden;
+        bar.push(notes.el.tip(tip).a11y(A11y::Toggle { on }));
+    }
+    if !falls {
+        bar.extend([down.el, up.el]);
+    }
+    bar.push(fold.el);
+    let bar = strip(bar);
+    // As tall as a third of the window, within reason, easing in and out.
+    let window = ui.scene().map_or(0., |s| s.layout.size.height);
+    let tall = if falls {
+        (window * 0.3).clamp(TEXT * 8., TEXT * 22.)
+    } else {
+        0.
+    };
+    let tall = ui.tween("song-notes-height", tall);
     // The focused part: the first one open, else the first.
     let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
     let script: Vec<_> = focused
@@ -731,6 +769,7 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .collect();
     let shown = Keys {
         range,
+        lit: song.map(|s| s.notes.lit(s.position)).unwrap_or_default(),
         held: match focused.and_then(|p| p.face.as_ref()?.tree.key_pressed.as_ref()) {
             Some(pressed) => pressed.clone(),
             None => v.playing.into_iter().collect(),
@@ -792,10 +831,19 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     }
     let bed = keyboard::keyboard(ui, "keybed", &shown, &mut app.view.playing, height);
     out.extend(bed.changed.into_iter().map(|(n, on)| Action::Note(n, on)));
+    // The notes fall in a lane as wide as the keybed, right above it, so
+    // each lands on its key; the wheels sit beside the keys alone.
+    let mut keys = Vec::new();
+    if tall > 0.5 {
+        let (notes, at) = song.map_or_else(Default::default, |s| (s.notes.clone(), s.position));
+        keys.push(waterfall::waterfall(&notes, at, range, tall).id("song-falling"));
+    }
+    keys.push(bed.el.grow(0).w(Len::Pct(100.)));
     col![
         bar,
-        row![bend.el, wheel.el, bed.el]
+        row![bend.el, wheel.el, col(keys).grow(1).w(0.).min_w(TEXT * 20.)]
             .gap(TIGHT)
+            .align(Align::End)
             .pad(kit::edges(0., SPACE, SPACE, SPACE))
     ]
     .animate_layout_with(quick())

@@ -18,6 +18,7 @@ pub mod meter;
 pub use kontra_ui_pictures as pictures;
 pub mod theme;
 pub mod view;
+pub mod waterfall;
 
 pub use pictures::Pictures;
 pub use theme::{NOTO_SANS, ui};
