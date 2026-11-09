@@ -297,21 +297,23 @@ impl Playing {
     }
 
     /// This block's events at their frame in it, into `out` while it has
-    /// room (the rest wait for the next block); false once it has ended.
-    fn block(&mut self, rate: f64, frames: usize, out: &mut Vec<(u32, Event)>) -> bool {
+    /// room (the rest wait for the next block). Once its last event has
+    /// played: the frame in this block that event fell on.
+    fn block(&mut self, rate: f64, frames: usize, out: &mut Vec<(u32, Event)>) -> Option<u32> {
         let end = self.frame + frames as u64;
+        let mut last = 0;
         while let Some(&(time, message)) = self.song.events.get(self.next) {
             let at = (time * rate).round() as u64;
             if at >= end || out.len() == out.capacity() {
                 break;
             }
-            let offset = at.saturating_sub(self.frame);
-            out.push((u32::try_from(offset).unwrap_or(0), event(message)));
+            last = u32::try_from(at.saturating_sub(self.frame)).unwrap_or(0);
+            out.push((last, event(message)));
             self.hold(message);
             self.next += 1;
         }
         self.frame = end;
-        self.next < self.song.events.len()
+        (self.next >= self.song.events.len()).then_some(last)
     }
 
     fn hold(&mut self, [status, key, velocity]: Message) {
@@ -329,17 +331,17 @@ impl Playing {
     }
 
     /// Ends every key it holds and lifts the sustain pedal on its channels,
-    /// at the block's start: stopping it leaves nothing sounding.
-    fn release(&mut self, out: &mut Vec<(u32, Event)>) {
+    /// at frame `at` of the block: stopping it leaves nothing sounding.
+    fn release(&mut self, at: u32, out: &mut Vec<(u32, Event)>) {
         for (channel, held) in (0u8..).zip(self.held.iter_mut()) {
             for key in 0..128u8 {
                 if *held & 1 << key != 0 && out.len() < out.capacity() {
-                    out.push((0, event([0x80 | channel, key, 0])));
+                    out.push((at, event([0x80 | channel, key, 0])));
                 }
             }
             *held = 0;
             if self.channels & 1 << channel != 0 && out.len() < out.capacity() {
-                out.push((0, Event::midi1(0xB0 | channel, 64, 0)));
+                out.push((at, Event::midi1(0xB0 | channel, 64, 0)));
             }
         }
     }
@@ -465,7 +467,7 @@ impl Songs {
         let mut added = false;
         while let Some(command) = self.commands.pop() {
             if let Some(mut old) = now.take() {
-                old.release(out);
+                old.release(0, out);
                 added = true;
                 self.retire(old.song);
             }
@@ -480,10 +482,11 @@ impl Songs {
         let Some(playing) = now.as_mut() else {
             return added;
         };
-        let more = playing.block(rate, frames, out);
+        let ended = playing.block(rate, frames, out);
         self.position.store(playing.millis(rate), Ordering::Relaxed);
-        if !more {
-            playing.release(out);
+        // After its last event, at that event's frame, whatever the block.
+        if let Some(at) = ended {
+            playing.release(at, out);
             if let Some(done) = now.take() {
                 self.retire(done.song);
             }
@@ -743,6 +746,25 @@ pub(crate) mod tests {
         assert!(matches!(firsts.first(), Some(Event::NoteOff(p)) if p.key == 60));
         assert!(next.iter().any(|(_, e)| key_on(e) == Some(60)));
         assert_eq!(songs.status().map(|s| s.0), Some("b.mid".into()));
+    }
+
+    /// The song holds the pedal from its start; ending, it lifts it on the
+    /// frame of its last event (G's note-off at 3 s), not at the start of
+    /// the block that event falls in.
+    #[test]
+    fn an_ending_song_lets_go_after_its_last_event_at_any_block_size() {
+        for frames in [64, 512, 1000, 4096] {
+            let songs = Songs::default();
+            songs.play(Song::read("a.mid".into(), &song()).unwrap());
+            let mut now = None;
+            let events = play(&songs, &mut now, frames, 200_000 / frames);
+            let up = events
+                .iter()
+                .rev()
+                .find(|(_, e)| *e == Event::midi1(0xB0, 64, 0));
+            assert_eq!(up.map(|e| e.0), Some(144_000), "blocks of {frames}");
+            assert!(now.is_none());
+        }
     }
 
     #[test]
