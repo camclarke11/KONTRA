@@ -260,6 +260,8 @@ fn the_touch_ups_switch_and_say_what_they_did_to_the_song_playing() {
         Some("C"),
         "heard as it rings"
     );
+    // What the touch-ups did, under the song's menu.
+    click(&mut ui, &mut app, "song-more");
     assert_eq!(
         text(&ui, "song-touched").as_deref(),
         Some("auto-pedal · humanised")

@@ -1,6 +1,6 @@
 //! Recording, practice and exporting driven by the pointer, headless: the
-//! keyboard bar's Record, Export and Practice controls ask for what they
-//! name, and the practice marks over the keys leave them playable.
+//! keyboard bar's Record and Practice and the header's Export ask for what
+//! they name, and the practice marks over the keys leave them playable.
 
 use kontra_ui::app::{self, Action, App, Song};
 use kontra_ui::export::{self, Exporting};
@@ -80,7 +80,7 @@ fn editor() -> App {
 }
 
 #[test]
-fn the_keyboard_bar_records_exports_and_practises() {
+fn record_export_and_practice_ask_for_what_they_name() {
     let mut ui = kontra_ui::ui();
     let mut app = editor();
     settle(&mut ui, &mut app);

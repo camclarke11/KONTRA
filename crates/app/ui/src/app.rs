@@ -1,9 +1,11 @@
 //! The editor, laid out as v2 laid it out: a header with the engine's load,
-//! the master and the performance switches; the browser; the Rack, Mixer
-//! and Report tabs; the keyboard along the foot. Built from [`crate::kit`]
-//! each frame from the [`App`] the host fills; what the user does comes
-//! back as [`Action`]s. Long words are cut to one line with the rest in a
-//! tooltip, choices are dropdowns, menus and panels float.
+//! the songs' files, the master and the performance switches; the browser;
+//! the Rack, Mixer and Report tabs; the keyboard strip along the foot,
+//! where the playing happens (a song's transport, practice, recording and
+//! the notes over the keys: [`strip`]). Built from [`crate::kit`] each
+//! frame from the [`App`] the host fills; what the user does comes back as
+//! [`Action`]s. Long words are cut to one line with the rest in a tooltip,
+//! choices are dropdowns, menus and panels float.
 
 mod browser;
 mod controls;
@@ -15,6 +17,7 @@ mod report;
 mod settings;
 mod songs;
 mod sound;
+mod strip;
 
 pub use songs::{Played, SongAction, SongFile, SongFolder, SongShelf, SongView, Songbook, Touch};
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
@@ -23,11 +26,9 @@ use kontra_ui_model::Interface;
 use mui::prelude::*;
 
 use crate::Pictures;
-use crate::design;
-use crate::keyboard::{self, Keys, note_name};
-use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
+use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, tab, vrule};
 use crate::stage;
-use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
+use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, secondary};
 use crate::waterfall::{self, Notes};
 
 /// Everything the editor shows. The host fills the data; `view` is the
@@ -514,7 +515,7 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         loading_bar(app),
         row(middle).grow(1).min_h(0).align(Align::Stretch),
         rule(),
-        keys(ui, app, &mut out).shrink(0).fill(Role::Surface),
+        strip::view(ui, app, &mut out).shrink(0).fill(Role::Surface),
     ]
     .w(Len::Pct(100.))
     .h(Len::Pct(100.))
@@ -561,23 +562,125 @@ fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     .h(Len::Pct(100.))
 }
 
-/// "Play MIDI"; while a song is loaded, its transport ([`stage::compact`]).
+/// The songs' files: "Play MIDI…" picks one to play along with the rack
+/// (a song playing is replaced), and while there is one to export (the
+/// song playing, or played last) Export, or the export's progress.
 fn song_control(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    if app.song.is_none() {
-        let play = button(ui, "song-play", "Play MIDI", false);
-        if play.changed {
-            out.push(Action::PlaySong);
-        }
-        return play
-            .el
-            .tip("Play a MIDI file into the rack, or drop one on the window");
+    let play = button(ui, "song-play", "Play MIDI…", false);
+    if play.changed {
+        out.push(Action::PlaySong);
     }
-    stage::compact(ui, app, out)
+    let mut items = vec![
+        play.el
+            .tip("Play a MIDI file along with the rack, or drop one on the window"),
+    ];
+    // Exporting the song ([`crate::export`]).
+    if app.export.song.is_some() || app.export.job.is_some() {
+        let mut export = Vec::new();
+        items.push(crate::export::control(
+            ui,
+            &mut app.view.menu,
+            &app.export,
+            &mut export,
+        ));
+        out.extend(export.into_iter().map(Action::Export));
+    }
+    row(items)
+        .gap(TIGHT)
+        .align(Align::Center)
+        .shrink(0)
+        .id("song-files")
 }
 
-/// Narrower than this, a window playing a song shows no load readouts in
-/// its header, so the song's transport, MIDI Thru and Panic fit.
-const NARROW: f64 = 1100.;
+/// From this window width the header shows the engine's load, CPU and
+/// voices; from [`ROOMY`], its memory and disk too. Narrower, the
+/// readouts give way so the controls fit (and so does a first frame,
+/// whose width is not known yet). An export's progress takes their room.
+const LOADED: f64 = 900.;
+const ROOMY: f64 = 1280.;
+
+/// Whether the window is `wide` enough for a readout, with room left for
+/// an export's progress while one runs.
+fn fits(app: &App, wide: f64) -> bool {
+    let busy = if app.export.job.is_some() { 260. } else { 0. };
+    app.width >= wide + busy
+}
+
+/// The engine's load: CPU and voices, and memory and disk where there is
+/// room; each in full in its tooltip.
+fn load(app: &App) -> El {
+    let s = app.stats;
+    let ram = if s.ram_mb > 0 { s.ram_mb } else { s.samples_mb };
+    let stat = |label: &str, value: String, widest: &str, tip: String| {
+        row![section(label), caption(value).reserve(widest)]
+            .gap(TIGHT)
+            .align(Align::Center)
+            .shrink(0)
+            .tip(tip)
+            .id(format!("stat-{label}"))
+    };
+    let mut stats = vec![
+        stat(
+            "CPU",
+            format!("{:.0}%", s.cpu),
+            "100%",
+            "The audio thread's time spent rendering".into(),
+        ),
+        stat(
+            "Voices",
+            s.voices.to_string(),
+            "000",
+            "Voices playing".into(),
+        ),
+    ];
+    if fits(app, ROOMY) {
+        stats.extend([
+            stat(
+                "RAM",
+                format!("{ram} MB"),
+                "00000 MB",
+                format!(
+                    "{} MB of samples in memory, of {ram} MB in all",
+                    s.samples_mb
+                ),
+            ),
+            stat(
+                "Disk",
+                format!("{:.1} MB/s", s.disk_mbs),
+                "000.0 MB/s",
+                format!("Streamed from disk, through a {} MB cache", s.cache_mb),
+            ),
+        ]);
+    }
+    row(stats).gap(SPACE * 1.5).shrink(0).id("load")
+}
+
+/// The master gain, its readout and its level.
+fn master(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    let mut master = app.master;
+    let gain = kit::slider(
+        ui,
+        "master",
+        "Master gain · double-click for 0 dB",
+        &mut master,
+        -60.0..=6.0,
+        0.,
+        (TEXT * 6., CONTROL),
+    );
+    if gain.changed {
+        app.master = master;
+        out.push(Action::Master(master));
+    }
+    row![
+        section("Master"),
+        gain.el,
+        caption(db(app.master)).reserve("-inf dB"),
+        kit::meter(app.level, TEXT * 3.),
+    ]
+    .gap(TIGHT)
+    .align(Align::Center)
+    .shrink(0)
+}
 
 fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let side = icon_button(
@@ -590,73 +693,8 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if side.changed {
         app.view.browser_hidden = !app.view.browser_hidden;
     }
-    let s = app.stats;
-    let stat = |label: &str, value: String, widest: &str, tip: String| {
-        row![section(label), caption(value).reserve(widest)]
-            .gap(TIGHT)
-            .align(Align::Center)
-            .shrink(0)
-            .tip(tip)
-            .id(format!("stat-{label}"))
-    };
-    let ram = if s.ram_mb > 0 { s.ram_mb } else { s.samples_mb };
-    let load = row![
-        stat(
-            "CPU",
-            format!("{:.0}%", s.cpu),
-            "100%",
-            "The audio thread's time spent rendering".into()
-        ),
-        stat(
-            "Voices",
-            s.voices.to_string(),
-            "000",
-            "Voices playing".into()
-        ),
-        stat(
-            "RAM",
-            format!("{ram} MB"),
-            "00000 MB",
-            format!(
-                "{} MB of samples in memory, of {ram} MB in all",
-                s.samples_mb
-            )
-        ),
-        stat(
-            "Disk",
-            format!("{:.1} MB/s", s.disk_mbs),
-            "000.0 MB/s",
-            format!("Streamed from disk, through a {} MB cache", s.cache_mb)
-        ),
-    ]
-    .gap(SPACE * 1.5)
-    .shrink(0)
-    .id("load");
-    let mut master = app.master;
-    let gain = kit::slider(
-        ui,
-        "master",
-        "Master gain",
-        &mut master,
-        -60.0..=6.0,
-        0.,
-        (TEXT * 7., CONTROL),
-    );
-    if gain.changed {
-        app.master = master;
-        out.push(Action::Master(master));
-    }
-    let keyboard = icon_button(
-        ui,
-        "keyboard",
-        Icon::Piano,
-        "Keyboard",
-        !app.view.keyboard_hidden,
-    );
-    if keyboard.changed {
-        app.view.keyboard_hidden = !app.view.keyboard_hidden;
-    }
-    let song = song_control(ui, app, out);
+    let songs = song_control(ui, app, out);
+    let master = master(ui, app, out);
     let thru = button(ui, "midi-thru", "MIDI Thru", app.midi_thru);
     if thru.changed {
         app.midi_thru = !app.midi_thru;
@@ -666,30 +704,20 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if panic.changed {
         out.push(Action::Panic);
     }
-    // While a song's transport shares the header, a narrow window keeps
-    // the controls and drops the readouts (and so does a first frame,
-    // whose width is not known yet: a header that fits, whatever it is).
-    let roomy = app.song.is_none() || app.width >= NARROW;
-    let mut items = vec![
-        side.el,
-        body("KONTRA").text_weight(Weight::SEMIBOLD),
-        spacer(),
-    ];
-    if roomy {
-        items.extend([load, spacer()]);
+    // Who it is and how hard it works on the left; what the player does
+    // on the right, which never gives way: the left does.
+    let mut left = vec![side.el, body("KONTRA").text_weight(Weight::SEMIBOLD)];
+    if fits(app, LOADED) {
+        left.push(load(app));
     }
-    items.extend([
+    let mut right = vec![
+        songs,
         vrule().h(CONTROL * 0.6),
-        section("Master"),
-        gain.el,
-        caption(db(app.master)).reserve("-inf dB"),
-        kit::meter(app.level, TEXT * 4.),
+        master,
         vrule().h(CONTROL * 0.6),
-        keyboard.el,
-        song,
         thru.el.tip("Pass MIDI through to the host"),
-        panic.el.tip("Stop every note"),
-    ]);
+        panic.el.tip("Stop every note, and the song"),
+    ];
     if !app.report.is_empty() {
         let n = app.report.len();
         let warn = icon_button(
@@ -702,22 +730,31 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         if warn.changed {
             app.view.tab = Tab::Report;
         }
-        items.push(warn.el);
+        right.push(warn.el);
     }
-    let more = icon_button(ui, "app-menu", Icon::Menu, "Menu", false);
-    let mut header = vec![strip(items).grow(1).min_w(0), more.el];
+    let more = icon_button(ui, "app-menu", Icon::Menu, "Settings and About", false);
+    right.push(more.el);
     if kit::toggle(ui, &mut app.view.menu, "app-menu", more.changed) {
         let picked = kit::menu(ui, "app-menu", &["Settings", "About"], 1, None);
         if let Some(n) = picked.changed {
             app.view.sheet = [Sheet::Settings, Sheet::About].get(n).copied();
             app.view.menu = None;
         }
-        header.push(picked.el);
+        right.push(picked.el);
     }
-    row(header)
-        .align(Align::Center)
-        .pad(kit::edges(0., SPACE, 0., 0.))
-        .shrink(0)
+    row![
+        row(left)
+            .gap(SPACE * 1.5)
+            .align(Align::Center)
+            .grow(1)
+            .min_w(0)
+            .clip(),
+        row(right).gap(SPACE).align(Align::Center).shrink(0),
+    ]
+    .gap(SPACE)
+    .align(Align::Center)
+    .pad((SPACE, TIGHT))
+    .shrink(0)
 }
 
 fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -> El {
@@ -739,249 +776,6 @@ fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -
     let r = sheet(ui, "sheet", title, content);
     if r.changed {
         app.view.sheet = None;
-    }
-    r.el
-}
-
-fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
-    let v = &mut app.view;
-    let down = icon_button(ui, "octave-down", Icon::Left, "Octave down", false);
-    let up = icon_button(ui, "octave-up", Icon::Right, "Octave up", false);
-    let fold = icon_button(ui, "keys-fold", Icon::Down, "Hide the keyboard", false);
-    // A playing song's notes fall onto the keys, and with none what the
-    // player plays rises from them, unless this hides them.
-    let song = app.song.as_ref().filter(|s| !s.notes.is_empty());
-    let notes = button(ui, "song-notes", "Notes", !v.notes_hidden);
-    if down.changed {
-        v.octave = (v.octave - 1).max(0);
-    }
-    if up.changed {
-        v.octave = (v.octave + 1).min(5);
-    }
-    if fold.changed {
-        v.keyboard_hidden = true;
-    }
-    // With no song, the player's notes take room once they play.
-    let live = song.is_none() && app.played.begun;
-    if notes.changed && (song.is_some() || live) {
-        v.notes_hidden = !v.notes_hidden;
-    }
-    if v.keyboard_hidden {
-        return spacer().h(0);
-    }
-    // While a song's notes fall, the keybed shows the keys it plays,
-    // centred in whole octaves; its own octaves wait until they stop.
-    let shows = !v.notes_hidden && (song.is_some() || live);
-    let falls = song.is_some() && shows;
-    let low = 12 * v.octave.clamp(0, 5) as u8;
-    // What the player plays rises over a piano's keys, and any past them.
-    let piano = |(a, b): (u8, u8)| (a.min(PIANO.0), b.max(PIANO.1));
-    let range = match song.filter(|_| falls).and_then(|s| s.notes.keys()) {
-        Some(keys) => waterfall::fit(keys, waterfall::OCTAVES),
-        None if shows => {
-            let keys = app.played.notes.keys().map_or(PIANO, piano);
-            waterfall::fit(keys, waterfall::OCTAVES)
-        }
-        None => (low, low + 83),
-    };
-    let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
-        .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
-        .id("keys-range");
-    let mut bar = vec![section("Keyboard"), label];
-    if let Some(s) = song {
-        bar.push(songs::chord_label(s, &app.songbook));
-    }
-    bar.push(spacer());
-    // Record, Export and Practice ([`crate::record`], [`crate::export`],
-    // [`crate::practice`]).
-    let mut record = Vec::new();
-    bar.push(crate::record::control(
-        ui,
-        &mut v.menu,
-        &app.record,
-        &mut record,
-    ));
-    out.extend(record.into_iter().map(Action::Record));
-    let mut export = Vec::new();
-    bar.push(crate::export::control(
-        ui,
-        &mut v.menu,
-        &app.export,
-        &mut export,
-    ));
-    out.extend(export.into_iter().map(Action::Export));
-    let practice = crate::practice::control(ui, &mut v.menu, &app.practice);
-    if let Some(hands) = practice.changed {
-        app.practice.hands = hands;
-        out.push(Action::Practice(hands));
-    }
-    bar.push(practice.el);
-    if song.is_some() || live {
-        if shows {
-            bar.push(design_picker(ui, v));
-        }
-        let tip = if live {
-            "Show the notes you play rising from the keys"
-        } else {
-            "Show the song's notes falling onto the keys"
-        };
-        let on = !v.notes_hidden;
-        bar.push(notes.el.tip(tip).a11y(A11y::Toggle { on }));
-    }
-    if !shows {
-        bar.extend([down.el, up.el]);
-    }
-    bar.push(fold.el);
-    let bar = strip(bar);
-    // As tall as a third of the window, within reason, easing in and out.
-    let window = ui.scene().map_or(0., |s| s.layout.size.height);
-    let tall = if shows {
-        (window * 0.3).clamp(TEXT * 8., TEXT * 22.)
-    } else {
-        0.
-    };
-    let tall = ui.tween("song-notes-height", tall);
-    // The focused part: the first one open, else the first.
-    let focused = app.parts.iter().find(|p| p.open).or(app.parts.first());
-    let script: Vec<_> = focused
-        .and_then(|p| p.face.as_ref())
-        .map(|f| (f.tree.keybed.iter()).map(|&(n, c)| (n, crate::view::color(c))))
-        .into_iter()
-        .flatten()
-        .collect();
-    let look = design::named(&v.design);
-    let lit = song
-        .map(|s| s.notes.lit_in(s.position, &look))
-        .unwrap_or_default();
-    let shown = Keys {
-        range,
-        lit: waterfall::with_played(lit, &app.played, &look, song.is_none()),
-        held: match focused.and_then(|p| p.face.as_ref()?.tree.key_pressed.as_ref()) {
-            Some(pressed) => pressed.clone(),
-            None => v.playing.into_iter().collect(),
-        },
-        spans: app
-            .parts
-            .iter()
-            .enumerate()
-            .map(|(n, p)| (p.keys.0, p.keys.1, crate::theme::part_color(n)))
-            .collect(),
-        // A script that colours its keys shows its own keyswitches.
-        switches: focused
-            .filter(|_| script.is_empty())
-            .map(|p| {
-                p.articulations
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(a, (_, key))| Some(((*key)?, crate::theme::part_color(a))))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        script,
-        names: focused
-            .and_then(|p| p.face.as_ref())
-            .map(|f| f.tree.key_names.clone())
-            .unwrap_or_default(),
-    };
-    let height = TEXT * 6.;
-    let mut pitch = v.pitch;
-    let bend = kit::slider(
-        ui,
-        "pitch",
-        "Pitch bend",
-        &mut pitch,
-        -1.0..=1.0,
-        0.,
-        (TEXT * 1.5, height),
-    );
-    if !ui.get("pitch").held {
-        pitch = 0.;
-    }
-    if pitch != v.pitch {
-        v.pitch = pitch;
-        out.push(Action::Pitch(pitch));
-    }
-    let mut modulation = v.modulation;
-    let wheel = kit::slider(
-        ui,
-        "modulation",
-        "Modulation",
-        &mut modulation,
-        0.0..=1.0,
-        0.,
-        (TEXT * 1.5, height),
-    );
-    if wheel.changed {
-        v.modulation = modulation;
-        out.push(Action::Modulation(modulation));
-    }
-    let bed = keyboard::keyboard(ui, "keybed", &shown, &mut app.view.playing, height);
-    out.extend(bed.changed.into_iter().map(|(n, on)| Action::Note(n, on)));
-    // Practice marks the keys to press over the notes and the keys.
-    let marks = falls && app.practice.marks();
-    // The notes fall in a lane as wide as the keybed, right above it, so
-    // each lands on its key, the keys the player strikes lit under them;
-    // with no song, what the player plays rises from the keys instead.
-    // The wheels sit beside the keys alone.
-    let mut keys = Vec::new();
-    if tall > 0.5 {
-        let lane = match song {
-            Some(s) => waterfall::falling(waterfall::Show {
-                notes: s.notes.clone(),
-                at: s.position,
-                range,
-                design: look,
-                played: Some(app.played.clone()),
-                ..waterfall::Show::default()
-            })
-            .h(tall)
-            .id("song-falling"),
-            None => waterfall::falling(waterfall::Show::rising(&app.played, range, look))
-                .h(tall)
-                .id("played-rising"),
-        };
-        keys.push(if marks {
-            let over = crate::practice::lane(&app.practice, range, tall);
-            stack![lane, over].w(Len::Pct(100.))
-        } else {
-            lane
-        });
-    }
-    let bed = bed.el.grow(0).w(Len::Pct(100.));
-    keys.push(if marks {
-        let over = crate::practice::keys(&app.practice, range, height);
-        stack![bed, over].w(Len::Pct(100.))
-    } else {
-        bed
-    });
-    col![
-        bar,
-        row![bend.el, wheel.el, col(keys).grow(1).w(0.).min_w(TEXT * 20.)]
-            .gap(TIGHT)
-            .align(Align::End)
-            .pad(kit::edges(0., SPACE, SPACE, SPACE))
-    ]
-    .animate_layout_with(quick())
-}
-
-/// A piano's 88 keys, A-1 to C7 (middle C as C3).
-const PIANO: (u8, u8) = (21, 108);
-
-/// Which [`design`] the falling notes are drawn in: a dropdown of those
-/// that ship, then the user's own.
-fn design_picker(ui: &mut Ui, v: &mut View) -> El {
-    let all = design::all();
-    let names: Vec<&str> = all.iter().map(|d| d.meta.name.as_str()).collect();
-    let current = design::named(&v.design);
-    let at = names.iter().position(|n| *n == current.meta.name);
-    let label = (
-        None,
-        current.meta.name.as_str(),
-        "How the falling notes look",
-    );
-    let r = kit::dropdown(ui, &mut v.menu, "song-design", label, &names, at);
-    if let Some(name) = r.changed.and_then(|n| names.get(n)) {
-        v.design = (*name).to_owned();
     }
     r.el
 }

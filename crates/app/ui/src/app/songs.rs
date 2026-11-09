@@ -130,27 +130,29 @@ pub enum SongAction {
     Rescan,
 }
 
+/// The song last read by the Songs tab, if it is `song`.
+fn read<'a>(song: &super::Song, book: &'a Songbook) -> Option<&'a Played> {
+    book.playing.as_ref().filter(|p| p.name == song.name)
+}
+
 /// The chord sounding in `song` now, for the keyboard bar, heard from its
 /// notes as they ring when the Songs tab read it, else as its keys hold
-/// them; and, dim, the touch-ups it got.
+/// them.
 pub(super) fn chord_label(song: &super::Song, book: &Songbook) -> El {
-    let played = book.playing.as_ref().filter(|p| p.name == song.name);
-    let notes = played.map_or(&song.notes, |p| &p.ringing);
+    let notes = read(song, book).map_or(&song.notes, |p| &p.ringing);
     let chord = crate::chord::chord_at(notes, song.position).unwrap_or_default();
-    let mut items = vec![
-        caption(chord)
-            .text_weight(Weight::SEMIBOLD)
-            .lines(1)
-            .reserve("C#m7b5/G#")
-            .tip("The chord sounding now")
-            .id("song-chord"),
-    ];
-    let applied = played.map(|p| p.applied).unwrap_or(Touch {
-        pedal: false,
-        humanise: false,
-        roll: false,
-        velocity: false,
-    });
+    caption(chord)
+        .text_weight(Weight::SEMIBOLD)
+        .lines(1)
+        .reserve("C#m7b5/G#")
+        .tip("The chord sounding now")
+        .id("song-chord")
+}
+
+/// The touch-ups `song` got as the Songs tab read it, dim, for the song's
+/// menu; none when it got none.
+pub(super) fn touched_label(song: &super::Song, book: &Songbook) -> Option<El> {
+    let applied = read(song, book)?.applied;
     let done: Vec<&str> = [
         (applied.pedal, "auto-pedal"),
         (applied.humanise && !applied.roll, "humanised"),
@@ -160,17 +162,24 @@ pub(super) fn chord_label(song: &super::Song, book: &Songbook) -> El {
     .into_iter()
     .filter_map(|(on, word)| on.then_some(word))
     .collect();
-    if !done.is_empty() {
-        items.push(
+    if done.is_empty() {
+        return None;
+    }
+    Some(
+        row![
+            section("Touch-ups").w(TEXT * 6.5).shrink(0),
             caption(done.join(" · "))
                 .fill(secondary())
                 .lines(1)
                 .min_w(0)
-                .tip("Touch-ups this song got as it was read; change them in the browser's Songs tab")
+                .tip(
+                    "Touch-ups this song got as it was read; change them in the browser's Songs tab"
+                )
                 .id("song-touched"),
-        );
-    }
-    row(items).gap(SPACE).align(Align::Center).min_w(0)
+        ]
+        .gap(TIGHT)
+        .align(Align::Center),
+    )
 }
 
 /// `seconds` as minutes and seconds: 3:07.

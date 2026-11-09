@@ -166,7 +166,7 @@ fn songbook(name: &str) -> Songbook {
             name: name.into(),
             needs: rough,
             applied: rough,
-            ringing: Notes::default(),
+            ringing: song(),
         }),
         songs,
         ..Songbook::default()
