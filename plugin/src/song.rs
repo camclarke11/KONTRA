@@ -20,14 +20,17 @@ use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
 use kontra_host::rack::{Event, HostNote, HostPattern};
+use kontra_library::Touch;
 use kontra_ui::waterfall::{Note, Notes, Pedal};
 
 use crate::folder::{Dialog, Pick};
 use crate::lock;
 
 mod meta;
+pub mod transform;
 mod transport;
 
+pub use transform::Touched;
 pub use transport::{Playing, SLOWEST, SPLIT, Transport};
 
 /// The port a song's notes come from: not the host's, not the editor's.
@@ -58,6 +61,9 @@ pub struct Song {
     beats: Vec<meta::Beat>,
     /// What the Stage's title card and track list show.
     pub about: About,
+    /// Where it plays from: seconds into it, or None for its start (after
+    /// any count-in). The same song read again plays on from where it was.
+    from: Option<f64>,
 }
 
 /// What a song is called, by whom, and what its voices are.
@@ -70,22 +76,34 @@ pub struct About {
 }
 
 impl Song {
-    /// Reads the MIDI file at `path`; Err says why it cannot play.
-    pub fn open(path: &Path) -> Result<Self, String> {
+    /// Reads the MIDI file at `path` with the touch-ups of `touch` it
+    /// needs ([`transform`]); Err says why it cannot play.
+    pub fn open(path: &Path, touch: &Touch) -> Result<(Self, Touched), String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        Self::read(name, &bytes)
+        Self::read_with(name, &bytes, touch)
     }
 
-    /// The song in `bytes`, a Standard MIDI File, as `name`.
+    /// The song in `bytes`, a Standard MIDI File, as `name`, as written.
+    #[cfg(test)]
     pub fn read(name: String, bytes: &[u8]) -> Result<Self, String> {
-        let timeline: Vec<(f64, u16, Message)> = timeline(bytes)?
+        Self::read_with(name, bytes, &Touch::NONE).map(|(song, _)| song)
+    }
+
+    /// The song in `bytes` with the touch-ups of `touch` it needs, and
+    /// what was found and done.
+    pub fn read_with(name: String, bytes: &[u8], touch: &Touch) -> Result<(Self, Touched), String> {
+        let (timeline, tempo) = timeline(bytes)?;
+        let timeline: Vec<(f64, u16, Message)> = timeline
             .into_iter()
             .filter(|&(_, _, [status, ..])| status & 15 != DRUMS)
             .collect();
+        let analysis = transform::analyse(&timeline, &tempo);
+        let applied = analysis.applies(touch);
+        let timeline = transform::apply(timeline, &tempo, applied);
         let length = timeline.last().map_or(0.0, |&(time, ..)| time);
         let notes = notes(&timeline, length).with_pedal(pedal(&timeline));
         if notes.is_empty() {
@@ -110,7 +128,12 @@ impl Song {
                 })
                 .collect(),
         };
-        Ok(Self {
+        let touched = Touched {
+            analysis,
+            applied,
+            ringing: transform::ringing(&timeline, length),
+        };
+        let song = Self {
             name,
             events: timeline.into_iter().map(|(time, _, m)| (time, m)).collect(),
             length,
@@ -118,7 +141,9 @@ impl Song {
             voice_of,
             beats: meta.beats,
             about,
-        })
+            from: None,
+        };
+        Ok((song, touched))
     }
 }
 
@@ -263,8 +288,9 @@ enum Said {
 
 /// The file's channel messages in order, with their time in seconds by its
 /// tempo map and the track they are in: format 0 and 1 (format 2's
-/// patterns play together), ticks per quarter note or SMPTE frames.
-fn timeline(bytes: &[u8]) -> Result<Vec<(f64, u16, Message)>, String> {
+/// patterns play together), ticks per quarter note or SMPTE frames. And
+/// the tempo map, for the touch-ups ([`transform`]).
+fn timeline(bytes: &[u8]) -> Result<(Vec<transform::Timed>, transform::Tempo), String> {
     if bytes.get(..4) != Some(b"MThd".as_slice()) {
         return Err("it is not a Standard MIDI File".into());
     }
@@ -298,18 +324,23 @@ fn timeline(bytes: &[u8]) -> Result<Vec<(f64, u16, Message)>, String> {
     said.sort_by_key(|&(tick, _)| tick);
 
     let mut tempo = 500_000.0; // 120 BPM until the file says otherwise
+    let seconds = |tempo: f64| per_tick.unwrap_or(tempo / 1e6 / division as f64);
+    let mut map = transform::Tempo::new(per_tick.is_none().then_some(division), seconds(tempo));
     let (mut time, mut last) = (0.0, 0);
     let mut out = Vec::with_capacity(said.len());
     for (tick, what) in said {
         let ticks = tick.saturating_sub(last) as f64;
-        time += ticks * per_tick.unwrap_or(tempo / 1e6 / division as f64);
+        time += ticks * seconds(tempo);
         last = tick;
         match what {
-            Said::Tempo(t) => tempo = f64::from(t),
+            Said::Tempo(t) => {
+                tempo = f64::from(t);
+                map.change(time, tick, seconds(tempo));
+            }
             Said::Message(track, m) => out.push((time, track, m)),
         }
     }
-    Ok(out)
+    Ok((out, map))
 }
 
 /// Track `n`'s tempo changes and channel messages, at their tick, into `out`.
@@ -428,12 +459,16 @@ impl Default for Songs {
 }
 
 impl Songs {
-    /// Reads the file at `path` and plays it, replacing what plays.
-    pub fn open(&self, path: &Path) -> Result<(), String> {
-        let song = Song::open(path)?;
+    /// Reads the file at `path` with the touch-ups of `touch` it needs and
+    /// plays it, replacing what plays; what was found and done. From `at`
+    /// seconds into it, its loop, mutes and pause kept (the song playing,
+    /// read again), or from its start.
+    pub fn open_at(&self, path: &Path, touch: &Touch, at: Option<f64>) -> Result<Touched, String> {
+        let (mut song, touched) = Song::open(path, touch)?;
+        song.from = at.filter(|s| s.is_finite() && *s > 0.).map(|s| s.min(song.length));
         *lock(&self.folder) = path.parent().map(Path::to_path_buf);
         self.play(song);
-        Ok(())
+        Ok(touched)
     }
 
     /// Plays `song`, replacing what plays.
@@ -442,8 +477,14 @@ impl Songs {
         // The audio thread has no use for them.
         *lock(&self.notes) = std::mem::take(&mut song.notes);
         *lock(&self.about) = song.about.clone();
-        // Before 0 by its count-in, if it has one.
-        let start = self.transport.begin(&song);
+        // Before 0 by its count-in, if it has one; or where it was.
+        let start = match song.from {
+            Some(at) => {
+                self.transport.resume();
+                at
+            }
+            None => self.transport.begin(&song),
+        };
         self.transport.head.stamp(start, 0., start, 1.0);
         self.playing.store(true, Ordering::Release);
         // Full only if the audio thread has stopped: nothing would play it.

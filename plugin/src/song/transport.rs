@@ -268,6 +268,14 @@ impl Transport {
         count(song, self.settings().count_in).map_or(0., |c| c.start())
     }
 
+    /// The song playing, read again, plays on: its loop, mutes and pause
+    /// stay as they were.
+    pub(super) fn resume(&self) {
+        self.seek.store(NO_SEEK, Ordering::Release);
+        self.ended.store(false, Ordering::Release);
+        self.loaded.store(true, Ordering::Release);
+    }
+
     /// The song played to its end, and waits there paused.
     pub(super) fn finish(&self) {
         self.ended.store(true, Ordering::Release);
@@ -569,6 +577,9 @@ impl Playing {
             },
         };
         p.restart(settings, rate);
+        if let Some(at) = p.song.from {
+            p.locate(at, rate);
+        }
         p
     }
 

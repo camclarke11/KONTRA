@@ -9,12 +9,15 @@ use std::time::{Duration, Instant};
 
 use kontra_ui_model::{AssetRef, ImageMeta};
 
-use super::{Action, App, Format, Shelf};
+use super::{Action, App, Format, Shelf, View};
 use crate::Pictures;
 use crate::kit::{self, Icon, field, glyph, icon_button, interactive, list_row, rule, tab};
 use crate::theme::{CONTROL, SIDEBAR, SMALL, SPACE, TEXT, TIGHT, accent, secondary};
 
 pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    if app.view.format == Format::Songs {
+        return super::songs::view(ui, app, out);
+    }
     let top = libraries(ui, app, out);
     let bottom = presets(ui, app, out);
     let edge = split(ui, app);
@@ -120,18 +123,13 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     if hide.changed {
         v.browser_hidden = true;
     }
-    let mut formats = Vec::new();
-    for (format, label) in [(Format::Kontakt, "Kontakt"), (Format::Uvi, "Falcon / UVI")] {
-        let t = tab(ui, format!("format-{label}"), label, v.format == format);
-        if t.changed && v.format != format {
-            (v.format, v.library) = (format, None);
-            v.search.clear();
-        }
-        formats.push(t.el);
-    }
-    let format = v.format;
-    let count = app.libraries.iter().filter(|l| l.format == format).count();
-    formats.extend([spacer(), caption(count.to_string()).fill(secondary())]);
+    let libraries = &app.libraries;
+    let formats = formats(
+        ui,
+        v,
+        |f| libraries.iter().filter(|l| l.format == f).count(),
+        out,
+    );
     let starred = app.libraries.iter().filter(|l| l.starred).count();
     let mut shelf_rows = Vec::new();
     for (shelf, icon, label, n) in [
@@ -180,14 +178,45 @@ fn libraries(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         .gap(TIGHT)
         .align(Align::Center)
         .pad(kit::edges(SPACE, SPACE, 0., SPACE)),
-        row(formats)
-            .align(Align::Center)
-            .pad(kit::edges(0., SPACE, 0., 0.)),
+        formats,
         rule(),
         col(shelf_rows).pad((TIGHT, 0.)),
         rule(),
         list.grow(1).min_h(0),
     ]
+}
+
+/// The browser's tabs, Kontakt, Falcon / UVI and Songs, and how many
+/// `count` says the one shown lists. Choosing Songs reads its folders again.
+pub(super) fn formats(
+    ui: &mut Ui,
+    v: &mut View,
+    count: impl Fn(Format) -> usize,
+    out: &mut Vec<Action>,
+) -> El {
+    let mut tabs = Vec::new();
+    for (format, label) in [
+        (Format::Kontakt, "Kontakt"),
+        (Format::Uvi, "Falcon / UVI"),
+        (Format::Songs, "Songs"),
+    ] {
+        let t = tab(ui, format!("format-{label}"), label, v.format == format);
+        if t.changed && v.format != format {
+            (v.format, v.library) = (format, None);
+            v.search.clear();
+            if format == Format::Songs {
+                out.push(Action::Songs(super::SongAction::Rescan));
+            }
+        }
+        tabs.push(t.el);
+    }
+    tabs.extend([
+        spacer(),
+        caption(count(v.format).to_string()).fill(secondary()),
+    ]);
+    row(tabs)
+        .align(Align::Center)
+        .pad(kit::edges(0., SPACE, 0., 0.))
 }
 
 fn library_list(ui: &mut Ui, app: &mut App) -> El {

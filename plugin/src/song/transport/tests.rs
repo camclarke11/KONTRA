@@ -562,3 +562,24 @@ fn a_new_song_starts_without_the_last_ones_loop_or_mutes() {
     // What the player chose for every song stays.
     assert_eq!((s.speed, s.transpose), (0.5, 2));
 }
+
+#[test]
+fn the_song_read_again_plays_on_from_where_it_was_with_its_loop() {
+    let songs = songs(scale());
+    let t = songs.transport();
+    let mut now = None;
+    let mut heard = Heard::default();
+    heard.run(&songs, &mut now, 512, 10);
+    t.set_marks(Some(1.), Some(2.));
+    // Read again (other touch-ups) 1 s in, where E starts.
+    let mut again = scale();
+    again.from = Some(1.);
+    songs.play(again);
+    let s = t.settings();
+    assert_eq!((s.a, s.b), (Some(1.), Some(2.)), "its loop stays");
+    let at = heard.frame;
+    heard.run(&songs, &mut now, 512, 1);
+    assert_eq!(heard.ons().last(), Some(&(at, 64)), "E on its first frame");
+    let position = songs.position_at(Instant::now());
+    assert!(position.is_some_and(|p| p >= 1.), "{position:?}");
+}

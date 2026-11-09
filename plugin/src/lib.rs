@@ -17,6 +17,7 @@ mod look;
 mod playtest;
 mod readout;
 mod song;
+mod songbook;
 mod stage;
 #[cfg(test)]
 mod tests;
@@ -105,6 +106,8 @@ pub struct Shared {
     folder: folder::Dialog,
     /// A MIDI file playing into the rack, and its picker.
     song: song::Songs,
+    /// The browser's Songs tab: folders of MIDI files, their touch-ups.
+    songbook: songbook::Shared,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -118,10 +121,13 @@ pub enum Request {
     Ui(editor::Edit),
     /// The browser's own actions: load a preset, star, rescan.
     Browse(kontra_ui::app::Action),
-    /// A folder the player dropped, to scan for libraries.
+    /// A folder the player dropped: one of MIDI files goes to the Songs
+    /// tab ([`songbook::holds_songs`]), any other is scanned for libraries.
     AddRoot(std::path::PathBuf),
     /// A MIDI file the player dropped, to play.
     Song(std::path::PathBuf),
+    /// What the browser's Songs tab asks: a star, a folder, touch-ups.
+    Songbook(kontra_ui::app::SongAction),
 }
 
 impl Shared {
@@ -249,6 +255,8 @@ impl BackgroundTask for Tick {
         let mut browser = lock(&p.shared.browser);
         let browser = browser.get_or_insert_with(browse);
         browser.poll();
+        let mut book = lock(&p.shared.songbook.book);
+        let book = book.get_or_insert_with(songbook::open);
         for r in requests {
             let loads = r.loads();
             match r {
@@ -273,8 +281,19 @@ impl BackgroundTask for Tick {
                 }
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
+                // A folder of MIDI files is one of songs, for the Songs tab.
+                Request::AddRoot(path) if songbook::holds_songs(&path) => book.add_folder(path),
                 Request::AddRoot(path) => browser.add_root(path),
-                Request::Song(path) => play_song(p, &path, &mut report),
+                Request::Song(path) => play_song(p, book, &path, &mut report),
+                Request::Songbook(action) => {
+                    if let Some(again) = book.act(action, &p.shared.song) {
+                        // Plays on from where it was, as touched now.
+                        let at = p.shared.song.position_at(std::time::Instant::now());
+                        if let Err(e) = book.play_at(&p.shared.song, &again, at) {
+                            report.push(format!("{}: {e}", again.display()));
+                        }
+                    }
+                }
             }
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
@@ -284,12 +303,16 @@ impl BackgroundTask for Tick {
             browser.add_root(path);
         }
         if let Some(path) = p.shared.song.dialog.picked() {
-            play_song(p, &path, &mut report);
+            play_song(p, book, &path, &mut report);
         }
         // The header's song clock moved, or a song started or ended.
         if let Some(path) = p.shared.song.autoplay() {
-            play_song(p, &path, &mut report);
+            play_song(p, book, &path, &mut report);
         }
+        if let Some(path) = p.shared.songbook.dialog.picked() {
+            book.add_folder(path);
+        }
+        book.poll();
         let song_moved = p.shared.song.tick();
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
@@ -300,7 +323,9 @@ impl BackgroundTask for Tick {
         }
         // What the requests did shows, whether or not the editor's copy
         // of the rack noticed (a script's answer to a click).
-        if lock(&p.shared.view).refresh(rack, browser, report) | changed | song_moved {
+        let mut view = lock(&p.shared.view);
+        let songs_moved = view.songs(book);
+        if view.refresh(rack, browser, report) | changed | song_moved | songs_moved {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -308,9 +333,15 @@ impl BackgroundTask for Tick {
     }
 }
 
-/// Plays the MIDI file at `path`; why it cannot goes to the report.
-fn play_song(p: &KontraParams, path: &std::path::Path, report: &mut Vec<String>) {
-    if let Err(e) = p.shared.song.open(path) {
+/// Plays the MIDI file at `path` with the touch-ups the songbook asks
+/// for; why it cannot goes to the report.
+fn play_song(
+    p: &KontraParams,
+    book: &mut songbook::Songbook,
+    path: &std::path::Path,
+    report: &mut Vec<String>,
+) {
+    if let Err(e) = book.play(&p.shared.song, path) {
         report.push(format!("{}: {e}", path.display()));
     }
 }

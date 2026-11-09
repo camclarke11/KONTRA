@@ -13,8 +13,10 @@ mod part;
 mod rack;
 mod report;
 mod settings;
+mod songs;
 mod sound;
 
+pub use songs::{Played, SongAction, SongFile, SongFolder, SongShelf, SongView, Songbook, Touch};
 pub use sound::{Envelope, Filter, Lower, Param, Pass, Sound};
 
 use kontra_ui_model::Interface;
@@ -65,6 +67,8 @@ pub struct App {
     pub loading: Option<Loading>,
     /// The MIDI file playing into the rack ([`Action::PlaySong`]), if any.
     pub song: Option<Song>,
+    /// The browser's Songs tab: folders of MIDI files and their touch-ups.
+    pub songbook: Songbook,
 }
 
 impl App {
@@ -118,6 +122,8 @@ pub enum Format {
     #[default]
     Kontakt,
     Uvi,
+    /// Not libraries: the player's MIDI files ([`Songbook`]).
+    Songs,
 }
 
 /// One loaded instrument.
@@ -329,6 +335,8 @@ pub struct View {
     pub face_scale: usize,
     /// How a part that chose none draws its interface.
     pub face_look: FaceLook,
+    /// The browser's Songs tab.
+    pub songs: SongView,
 }
 
 /// The editor sizes on offer.
@@ -427,6 +435,8 @@ pub enum Action {
     StopSong,
     /// The playing song's transport: pause, seek, speed, loop and the rest.
     Song(stage::Command),
+    /// The browser's Songs tab: play, star, a folder, the touch-ups.
+    Songs(SongAction),
     Star(usize, bool),
     AddFolder,
     /// New parts take the next free MIDI channel; their own output pair.
@@ -741,7 +751,11 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let label = caption(format!("{} – {}", note_name(range.0), note_name(range.1)))
         .tip("Every part · the keys play channel 1 or Omni · click a part to focus it")
         .id("keys-range");
-    let mut bar = vec![section("Keyboard"), label, spacer()];
+    let mut bar = vec![section("Keyboard"), label];
+    if let Some(s) = song {
+        bar.push(songs::chord_label(s, &app.songbook));
+    }
+    bar.push(spacer());
     if song.is_some() {
         if falls {
             bar.push(design_picker(ui, v));

@@ -63,9 +63,20 @@ pub struct Snapshot {
     stats: Stats,
     readout: Readout,
     report: Vec<String>,
+    /// The Songs tab, and which change of it.
+    songs: (u64, Arc<app::Songbook>),
 }
 
 impl Snapshot {
+    /// Copies the Songs tab from `book` if it changed; whether it did.
+    pub fn songs(&mut self, book: &crate::songbook::Songbook) -> bool {
+        if self.songs.0 == book.generation {
+            return false;
+        }
+        self.songs = (book.generation, Arc::new(book.view()));
+        true
+    }
+
     /// Copies what the editor shows from `rack`, with this tick's `report`;
     /// whether any of it changed, so an idle editor draws no frames.
     pub fn refresh(&mut self, rack: &Rack, browser: &Browser, report: Vec<String>) -> bool {
@@ -190,6 +201,10 @@ impl Snapshot {
             (app.next_channel, app.own_output) = self.new_parts;
             shown.browser = self.libraries.0;
         }
+        if shown.songs != self.songs.0 {
+            app.songbook = self.songs.1.as_ref().clone();
+            shown.songs = self.songs.0;
+        }
         for pictures in [&mut app.covers, &mut app.banners].into_iter().flatten() {
             pictures.poll();
         }
@@ -279,6 +294,7 @@ struct Shown {
     /// By part: its load and its sound's revision.
     sounds: Vec<(u64, u64)>,
     browser: u64,
+    songs: u64,
 }
 
 /// The catalog as the browser lists it: presets by path inside their
@@ -692,6 +708,19 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
                 // Panic stops a song too, then ends every note as before.
                 Action::Panic => p.shared.song.stop(),
+                Action::Songs(app::SongAction::Play(path)) => {
+                    p.shared.request(Request::Song(path));
+                    continue;
+                }
+                Action::Songs(app::SongAction::AddFolder(None)) => {
+                    let from = (app.songbook.folders.last()).map(|f| f.path.clone());
+                    p.shared.songbook.dialog.ask(from);
+                    continue;
+                }
+                Action::Songs(action) => {
+                    p.shared.request(Request::Songbook(action));
+                    continue;
+                }
                 _ => {}
             }
             if let Some(event) = played(&action) {
