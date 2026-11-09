@@ -5,7 +5,7 @@
 use mui::prelude::*;
 
 use crate::kit::{self, Icon, button, icon_button};
-use crate::theme::{TEXT, TIGHT};
+use crate::theme::{TEXT, TIGHT, secondary};
 
 /// Where a take is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,6 +137,18 @@ pub fn control(ui: &mut Ui, open: &mut Option<String>, rec: &Recording, out: &mu
             *open = None;
         }
         el.push(picked.el.tip(format!("Takes go to {}", rec.folder)));
+    }
+    // The last take, once saved: its name, so the player sees it landed.
+    if let (Take::Idle, Some(saved)) = (rec.take, &rec.saved) {
+        el.push(
+            caption(saved.clone())
+                .fill(secondary())
+                .lines(1)
+                .min_w(0)
+                .w(TEXT * 8.)
+                .tip(format!("Saved in {} · the menu plays it", rec.folder))
+                .id("recording-saved"),
+        );
     }
     row(el).gap(1).align(Align::Center).shrink(0)
 }

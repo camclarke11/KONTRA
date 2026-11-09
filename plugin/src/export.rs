@@ -213,12 +213,16 @@ impl Exports {
             Ok(path) => format!("saved {}", path.display()),
             Err(e) => e.clone(),
         });
+        let file = (self.last().as_deref())
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned());
         Exporting {
             song: song
                 .and_then(Path::file_name)
                 .map(|n| n.to_string_lossy().into_owned()),
             job,
             last,
+            file,
         }
     }
 

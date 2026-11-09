@@ -298,8 +298,13 @@ mod tests {
             name: "held".into(),
             events: vec![(0.0, [0x90, 60, 100]), (10.0, [0x80, 60, 0])],
         };
-        let song =
-            || Song::read("held.mid".into(), &write("held", 120.0, &[held.clone()])).unwrap();
+        let song = || {
+            Song::read(
+                "held.mid".into(),
+                &write("held", 120.0, std::slice::from_ref(&held)),
+            )
+            .unwrap()
+        };
         let mix = Mix {
             gain: 1.0,
             align: false,

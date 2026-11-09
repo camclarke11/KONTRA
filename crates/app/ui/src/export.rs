@@ -25,6 +25,8 @@ pub struct Exporting {
     pub job: Option<(String, f64)>,
     /// What the last export did: where it wrote, or why it did not.
     pub last: Option<String>,
+    /// The last file exported: its name.
+    pub file: Option<String>,
 }
 
 /// What the user asked of exporting.
@@ -88,7 +90,17 @@ pub fn control(ui: &mut Ui, open: &mut Option<String>, ex: &Exporting, out: &mut
         Some(_) if ex.last.is_some() => out.push(Do::Reveal),
         _ => {}
     }
-    r.el
+    let Some(file) = &ex.file else {
+        return r.el;
+    };
+    let file = caption(file.clone())
+        .fill(secondary())
+        .lines(1)
+        .min_w(0)
+        .w(TEXT * 8.)
+        .tip(ex.last.clone().unwrap_or_default())
+        .id("export-file");
+    row![r.el, file].gap(TIGHT).align(Align::Center).shrink(0)
 }
 
 /// The logical size a video frame is laid out at: 1080p, whatever it is

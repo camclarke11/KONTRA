@@ -119,8 +119,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         app.record.take = Take::CountIn(3);
         app.export.job = None;
         app.export.last = Some("saved ~/Music/KONTRA Recordings/chords.wav".into());
+        app.export.file = Some("chords.wav".into());
+        app.record.saved = Some("Recording 12.mid".into());
         settle(&mut ui, &mut app, size)?;
         shoot(&ui, &out.join(format!("studio-{w}-count-in.png")), size)?;
+        app.record.take = Take::Idle;
+        settle(&mut ui, &mut app, size)?;
+        shoot(&ui, &out.join(format!("studio-{w}-saved.png")), size)?;
         println!("{{\"width\":{w},\"height\":{h}}}");
     }
     // One frame of the video, at 1080p, two seconds in.
