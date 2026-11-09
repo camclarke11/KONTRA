@@ -207,6 +207,34 @@ fn main() -> Result<(), Box<dyn Error>> {
             save(&path, w, h, &paint(&ui, w, h)?)?;
             println!("{{\"width\":{w},\"at\":{at:.2},\"chord\":{chord:?},\"shot\":{path:?}}}");
         }
+        // A recording being transcribed into a song, then the song it made.
+        let (w, h) = size;
+        for (state, t) in [
+            (
+                "transcribing",
+                kontra_ui::transcribe::Transcribing {
+                    job: Some(("Nocturne in E-flat (my take).m4a".into(), 0.42)),
+                    ready: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                "transcribed",
+                kontra_ui::transcribe::Transcribing {
+                    last: Some("Made Nocturne in E-flat (my take).mid".into()),
+                    ready: true,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            app.transcribe = t;
+            for _ in 0..30 {
+                frame(&mut ui, &mut app, size)?;
+            }
+            let path = out.join(format!("songs-{w}-{state}.png"));
+            save(&path, w, h, &paint(&ui, w, h)?)?;
+            println!("{{\"width\":{w},\"state\":{state:?},\"shot\":{path:?}}}");
+        }
     }
     Ok(())
 }

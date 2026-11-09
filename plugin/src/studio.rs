@@ -54,6 +54,10 @@ pub fn played(shared: &Shared, event: &Event) {
 /// - `KONTRA_RECORD=<seconds>`: record a take that long, into
 ///   `KONTRA_RECORDINGS` if set; `KONTRA_COUNT_IN=1` counts it in.
 /// - `KONTRA_EXPORT=audio` or `video:<height>:<fps>`: export the song.
+/// - `KONTRA_TRANSCRIBE=<recording>`: transcribe it into a song, which
+///   then plays ([`crate::transcribe`]).
+/// - `KONTRA_MIDI_OUT=1`: send what plays out of the "KONTRA" MIDI port
+///   ([`crate::midi_out`]).
 #[derive(Default)]
 pub struct Auto {
     read: std::sync::atomic::AtomicBool,
@@ -116,6 +120,14 @@ impl Auto {
         };
         if let Some(kind) = kind {
             shared.request(Request::Export(kind));
+        }
+        if let Some(path) = var("KONTRA_TRANSCRIBE") {
+            shared.request(Request::Transcribe(path.into()));
+        }
+        if var("KONTRA_MIDI_OUT").is_some()
+            && let Err(e) = shared.midi_out.set(true)
+        {
+            eprintln!("MIDI out: {e}");
         }
     }
 }
