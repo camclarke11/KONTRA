@@ -505,7 +505,7 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     if let Some(s) = app.view.sheet {
         main.push(sheet_view(ui, app, s, &mut out).centered());
     }
-    middle.push(stack(main).grow(1).min_w(0).min_h(0));
+    middle.push(stack(main).grow(1).min_w(0).min_h(0).id("main"));
     // v2's two tones: the frame around the work (header, browser, tab
     // rows, keyboard) one step up on Surface, the work on Background.
     // Only the middle gives way to a short window: the header and the
@@ -773,11 +773,17 @@ fn sheet_view(ui: &mut Ui, app: &mut App, which: Sheet, out: &mut Vec<Action>) -
             .gap(SPACE),
         ),
     };
-    let r = sheet(ui, "sheet", title, content);
+    // No taller than the room under the header as last laid out, its
+    // content scrolling, so a short window keeps its keyboard in view.
+    let room = (ui.scene())
+        .and_then(|s| s.surface("main"))
+        .map_or(TEXT * 40., |s| s.frame.size.height - 2. * SPACE)
+        .clamp(TEXT * 10., TEXT * 40.);
+    let r = sheet(ui, "sheet", title, content.scroll().min_h(0));
     if r.changed {
         app.view.sheet = None;
     }
-    r.el
+    r.el.max_size((TEXT * 36., room))
 }
 
 /// A gain for a readout.

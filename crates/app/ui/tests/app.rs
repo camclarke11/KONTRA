@@ -160,6 +160,42 @@ fn an_empty_editor_says_what_to_do_first() {
     );
 }
 
+/// The settings, opened from the menu in the smallest window while notes
+/// rise over the keys, scroll inside the room there is: the keyboard stays
+/// in the window.
+#[test]
+fn the_settings_fit_a_small_window_and_leave_the_keyboard_in_it() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App {
+        folders: vec!["/Libraries".into()],
+        played: Played {
+            notes: Notes::new(vec![Note {
+                start: 0.5,
+                end: 1.0,
+                key: 60,
+                velocity: 100,
+                voice: 0,
+            }]),
+            at: 1.0,
+            begun: true,
+        },
+        ..App::default()
+    };
+    settle(&mut ui, &mut app);
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "app-menu");
+    click(&mut ui, &mut app, "app-menu-0");
+    assert_eq!(app.view.sheet, Some(app::Sheet::Settings));
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let bed = frame_of(&ui, "keybed").unwrap();
+    assert!(bed.y + bed.size.height <= 600.5, "{bed:?}");
+    let sheet = frame_of(&ui, "sheet").unwrap();
+    assert!(
+        sheet.y >= 0. && sheet.y + sheet.size.height <= bed.y,
+        "{sheet:?}"
+    );
+}
+
 /// "Play MIDI…" in the header asks for a file, and stays to pick another
 /// while one plays; the song's transport is the keyboard bar's, and its
 /// Stop stops it. However much is going on, a 900 pt window keeps every
