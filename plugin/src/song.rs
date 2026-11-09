@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use crossbeam_queue::ArrayQueue;
@@ -24,6 +24,11 @@ use kontra_ui::waterfall::{Note, Notes};
 
 use crate::folder::{Dialog, Pick};
 use crate::lock;
+
+mod meta;
+mod transport;
+
+pub use transport::{Now, Playing, Settings, Transport};
 
 /// The port a song's notes come from: not the host's, not the editor's.
 const PORT: u8 = 254;
@@ -46,6 +51,22 @@ pub struct Song {
     pub length: f64,
     /// Its notes, for the editor to show falling onto the keyboard.
     pub notes: Notes,
+    /// The voice (a track and channel, as [`Note::voice`] numbers them)
+    /// of each of `events`; [`transport`] mutes by it.
+    voice_of: Vec<u8>,
+    /// Its metre's beats, for the metronome and the count-in.
+    beats: Vec<meta::Beat>,
+    /// What the Stage's title card and track list show.
+    pub about: About,
+}
+
+/// What a song is called, by whom, and what its voices are.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct About {
+    pub title: String,
+    pub composer: Option<String>,
+    /// Each voice's name: its track's, or "Track n".
+    pub voices: Vec<String>,
 }
 
 impl Song {
@@ -70,13 +91,47 @@ impl Song {
         if notes.is_empty() {
             return Err("it has no notes outside the drum channel (10) to play".into());
         }
+        let meta = meta::read(bytes);
+        let voices = voices(&timeline);
+        let voice_of = (timeline.iter())
+            .map(|&(_, track, [status, ..])| {
+                let voice = voices.binary_search(&(track, status & 15)).ok();
+                voice.and_then(|v| u8::try_from(v).ok()).unwrap_or(u8::MAX)
+            })
+            .collect();
+        let (title, composer) = meta::from_name(&name);
+        let about = About {
+            title: meta.title.unwrap_or(title),
+            composer: meta.composer.or(composer),
+            voices: (voices.iter())
+                .map(|&(track, _)| {
+                    let named = meta.tracks.get(usize::from(track)).cloned().flatten();
+                    named.unwrap_or_else(|| format!("Track {}", track + 1))
+                })
+                .collect(),
+        };
         Ok(Self {
             name,
             events: timeline.into_iter().map(|(time, _, m)| (time, m)).collect(),
             length,
             notes,
+            voice_of,
+            beats: meta.beats,
+            about,
         })
     }
+}
+
+/// The voices that play notes in `timeline`, a track and channel each, in
+/// order: what [`Note::voice`] numbers.
+fn voices(timeline: &[(f64, u16, Message)]) -> Vec<(u16, u8)> {
+    let mut voices: Vec<(u16, u8)> = (timeline.iter())
+        .filter(|&&(_, _, [status, _, velocity])| status & 0xF0 == 0x90 && velocity > 0)
+        .map(|&(_, track, [status, ..])| (track, status & 15))
+        .collect();
+    voices.sort_unstable();
+    voices.dedup();
+    voices
 }
 
 /// The notes in `timeline` as the editor shows them: each from its
@@ -85,12 +140,7 @@ impl Song {
 /// numbered in that order (a piano file's right hand first, then its left).
 fn notes(timeline: &[(f64, u16, Message)], length: f64) -> Notes {
     let on = |[status, _, velocity]: Message| status & 0xF0 == 0x90 && velocity > 0;
-    let mut voices: Vec<(u16, u8)> = (timeline.iter())
-        .filter(|e| on(e.2))
-        .map(|&(_, track, [status, ..])| (track, status & 15))
-        .collect();
-    voices.sort_unstable();
-    voices.dedup();
+    let voices = voices(timeline);
     // The note each key of each channel has open, by index into `out`.
     let mut open = vec![None; 16 * 128];
     let mut out: Vec<Note> = Vec::new();
@@ -318,82 +368,6 @@ fn track(bytes: &[u8], n: u16, out: &mut Vec<(usize, Said)>) -> Result<(), Strin
 
 // MARK: playing it
 
-/// A song on the audio thread: how far it has got and the keys it holds.
-#[derive(Debug)]
-pub struct Playing {
-    song: Box<Song>,
-    /// Its next event.
-    next: usize,
-    /// Frames played since it started.
-    frame: u64,
-    /// The keys it holds, a bit per key, by channel.
-    held: [u128; 16],
-    /// The channels it has played on, a bit each.
-    channels: u16,
-}
-
-impl Playing {
-    fn new(song: Box<Song>) -> Self {
-        Self {
-            song,
-            next: 0,
-            frame: 0,
-            held: [0; 16],
-            channels: 0,
-        }
-    }
-
-    /// This block's events at their frame in it, into `out` while it has
-    /// room (the rest wait for the next block). Once its last event has
-    /// played: the frame in this block that event fell on.
-    fn block(&mut self, rate: f64, frames: usize, out: &mut Vec<(u32, Event)>) -> Option<u32> {
-        let end = self.frame + frames as u64;
-        let mut last = 0;
-        while let Some(&(time, message)) = self.song.events.get(self.next) {
-            let at = (time * rate).round() as u64;
-            if at >= end || out.len() == out.capacity() {
-                break;
-            }
-            last = u32::try_from(at.saturating_sub(self.frame)).unwrap_or(0);
-            out.push((last, event(message)));
-            self.hold(message);
-            self.next += 1;
-        }
-        self.frame = end;
-        (self.next >= self.song.events.len()).then_some(last)
-    }
-
-    fn hold(&mut self, [status, key, velocity]: Message) {
-        let channel = status & 15;
-        self.channels |= 1 << channel;
-        let Some(held) = self.held.get_mut(usize::from(channel)) else {
-            return;
-        };
-        let bit = 1u128 << (key & 127);
-        match status & 0xF0 {
-            0x90 if velocity > 0 => *held |= bit,
-            0x80 | 0x90 => *held &= !bit,
-            _ => {}
-        }
-    }
-
-    /// Ends every key it holds and lifts the sustain pedal on its channels,
-    /// at frame `at` of the block: stopping it leaves nothing sounding.
-    fn release(&mut self, at: u32, out: &mut Vec<(u32, Event)>) {
-        for (channel, held) in (0u8..).zip(self.held.iter_mut()) {
-            for key in 0..128u8 {
-                if *held & 1 << key != 0 && out.len() < out.capacity() {
-                    out.push((at, event([0x80 | channel, key, 0])));
-                }
-            }
-            *held = 0;
-            if self.channels & 1 << channel != 0 && out.len() < out.capacity() {
-                out.push((at, Event::midi1(0xB0 | channel, 64, 0)));
-            }
-        }
-    }
-}
-
 /// What the editor asks of the audio thread.
 enum Command {
     Play(Box<Song>),
@@ -408,16 +382,13 @@ pub struct Songs {
     /// The "Play MIDI" picker.
     pub dialog: Dialog,
     playing: AtomicBool,
-    /// Seconds into the song at the end of the last block rendered, as
-    /// `f64` bits.
-    rendered: AtomicU64,
-    /// When, in nanoseconds from `epoch`, the song's start would have been
-    /// rendered, by the last block's start and when it was rendered: the
+    /// Pause, seek, speed, loop and the rest, and where the song is: the
     /// audio clock as the editor sees it ([`Songs::position_at`]).
-    origin: AtomicI64,
-    epoch: Instant,
+    transport: Transport,
     /// What plays: its name and length in seconds, set as it starts.
     title: Mutex<Option<(String, f64)>>,
+    /// What plays: its title, composer and voices.
+    about: Mutex<About>,
     /// What plays' notes, for the editor.
     notes: Mutex<Notes>,
     /// The folder the last song came from, where the picker opens.
@@ -435,10 +406,9 @@ impl Default for Songs {
             retired: ArrayQueue::new(8),
             dialog: Dialog::new(Pick::Song),
             playing: AtomicBool::new(false),
-            rendered: AtomicU64::new(0),
-            origin: AtomicI64::new(0),
-            epoch: Instant::now(),
+            transport: Transport::default(),
             title: Mutex::new(None),
+            about: Mutex::new(About::default()),
             notes: Mutex::new(Notes::default()),
             folder: Mutex::new(None),
             shown: AtomicU32::new(u32::MAX),
@@ -461,7 +431,10 @@ impl Songs {
         *lock(&self.title) = Some((song.name.clone(), song.length));
         // The audio thread has no use for them.
         *lock(&self.notes) = std::mem::take(&mut song.notes);
-        self.stamp(0, 0, 1.0);
+        *lock(&self.about) = song.about.clone();
+        // Before 0 by its count-in, if it has one.
+        let start = self.transport.begin(&song);
+        self.transport.head.stamp(start, 0., start, 1.0);
         self.playing.store(true, Ordering::Release);
         // Full only if the audio thread has stopped: nothing would play it.
         let _ = self.commands.push(Command::Play(Box::new(song)));
@@ -470,7 +443,13 @@ impl Songs {
     /// Stops what plays: shown at once, its notes end on the next block.
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Release);
+        self.transport.end();
         let _ = self.commands.push(Command::Stop);
+    }
+
+    /// What plays: its title, composer and voices.
+    pub fn about(&self) -> About {
+        lock(&self.about).clone()
     }
 
     /// The MIDI file `KONTRA_PLAY` names, once per plugin: a way to start a
@@ -499,40 +478,20 @@ impl Songs {
 
     /// While a song plays: where it is, in seconds, at `at` (the instant a
     /// frame draws for): the last block rendered, moved on by the time
-    /// since, never past what has been rendered. It moves smoothly between
-    /// blocks, so a picture of the song can be drawn from it every frame.
-    /// The audio is heard later than this by the output's latency.
+    /// since at the song's speed, never past what has been rendered. It
+    /// moves smoothly between blocks, so a picture of the song can be drawn
+    /// from it every frame; paused, it holds still. The audio is heard
+    /// later than this by the output's latency.
     pub fn position_at(&self, at: Instant) -> Option<f64> {
         if !self.playing.load(Ordering::Acquire) {
             return None;
         }
-        let rendered = self.rendered();
-        let since = self
-            .nanos(at)
-            .saturating_sub(self.origin.load(Ordering::Acquire));
-        Some((since as f64 / 1e9).clamp(0.0, rendered))
+        Some(self.transport.head.at(at))
     }
 
     /// Seconds into the song at the end of the last block rendered.
     fn rendered(&self) -> f64 {
-        f64::from_bits(self.rendered.load(Ordering::Acquire))
-    }
-
-    /// `at` in nanoseconds from `epoch`.
-    fn nanos(&self, at: Instant) -> i64 {
-        let since = at.saturating_duration_since(self.epoch).as_nanos();
-        i64::try_from(since).unwrap_or(i64::MAX)
-    }
-
-    /// A block from frame `start` to `end` of the song, at `rate`, is being
-    /// rendered now.
-    fn stamp(&self, start: u64, end: u64, rate: f64) {
-        let rate = rate.max(1.0);
-        let start = (start as f64 / rate * 1e9) as i64;
-        let origin = self.nanos(Instant::now()).saturating_sub(start);
-        self.origin.store(origin, Ordering::Release);
-        self.rendered
-            .store((end as f64 / rate).to_bits(), Ordering::Release);
+        self.transport.head.end()
     }
 
     /// The notes of the song playing, or the last one played.
@@ -571,7 +530,8 @@ impl Songs {
             }
             match command {
                 Command::Play(song) => {
-                    *now = Some(Playing::new(song));
+                    let settings = self.transport.settings();
+                    *now = Some(Playing::new(song, &settings, rate));
                     self.playing.store(true, Ordering::Release);
                 }
                 Command::Stop => self.playing.store(false, Ordering::Release),
@@ -580,18 +540,20 @@ impl Songs {
         let Some(playing) = now.as_mut() else {
             return added;
         };
-        let start = playing.frame;
-        let ended = playing.block(rate, frames, out);
-        self.stamp(start, playing.frame, rate);
-        // After its last event, at that event's frame, whatever the block.
-        if let Some(at) = ended {
-            playing.release(at, out);
-            if let Some(done) = now.take() {
-                self.retire(done.song);
-            }
+        let before = out.len();
+        let settings = self.transport.settings();
+        let r = playing.play(&settings, &self.transport, rate, frames, out);
+        let after = f64::from(r.from) / rate.max(1.0);
+        self.transport.head.stamp(r.base, after, r.end, r.speed);
+        // Played to its end: it stays, paused there, to play again.
+        if r.ended {
+            self.transport.finish();
             self.playing.store(false, Ordering::Release);
         }
-        true
+        if r.replayed {
+            self.playing.store(true, Ordering::Release);
+        }
+        added || out.len() > before
     }
 
     /// Hands `song` to the tick to free; freed here only if the tick is far
@@ -840,9 +802,11 @@ pub(crate) mod tests {
                 (96_000, 67)
             ]
         );
-        // Ended by itself: the pedal lifted, nothing playing.
-        assert!(now.is_none());
+        // Ended by itself: the pedal lifted, nothing playing; it waits at
+        // its end to play again.
+        assert!(now.as_ref().is_some_and(Playing::ended));
         assert!(songs.status().is_none());
+        assert!(songs.now().is_some_and(|n| n.ended && n.paused));
         assert!(matches!(events.last(), Some((_, e)) if *e == Event::midi1(0xB0, 64, 0)));
         assert!(events.iter().all(|(_, e)| e.channel() != Some(DRUMS)));
     }
@@ -918,7 +882,7 @@ pub(crate) mod tests {
                 .rev()
                 .find(|(_, e)| *e == Event::midi1(0xB0, 64, 0));
             assert_eq!(up.map(|e| e.0), Some(144_000), "blocks of {frames}");
-            assert!(now.is_none());
+            assert!(now.as_ref().is_some_and(Playing::ended));
         }
     }
 

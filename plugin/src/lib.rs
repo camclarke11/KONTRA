@@ -477,6 +477,18 @@ impl PluginLogic for Kontra {
             }
         }
         s.gain = target;
+        // The song's metronome and count-in, on the first pair over the
+        // rack, at their own level: the master does not turn them down.
+        if let Some(song) = s.song.as_mut() {
+            let pair = b.num_output_channels().min(2);
+            song.click(s.rate, frames, |at, click| {
+                for ch in 0..pair {
+                    if let Some(out) = b.output(ch).get_mut(at..at + click.len()) {
+                        out.iter_mut().zip(click).for_each(|(o, c)| *o += c);
+                    }
+                }
+            });
+        }
         ProcessStatus::Normal
     }
 
