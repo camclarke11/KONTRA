@@ -555,6 +555,12 @@ impl Engine {
     /// A script note's note-off (its duration, `note_off`, or its parent's
     /// release): like a key-up it runs the release callback, which cannot
     /// ignore it, then releases the note (KSP manual, note_off and play_note).
+    /// With the sustain pedal down on its channel the note-off is a key-up
+    /// like any other: the sound holds until the pedal lifts. Kontakt applies
+    /// the pedal after the scripts, so a script's `note_off` (or a `-1`
+    /// child whose key went up) does not end a pedalled note. A script that
+    /// keeps the pedal from the engine (`ignore_controller` on CC 64) leaves
+    /// the pedal up here and holds its notes itself.
     fn end_note(&mut self, note: NoteRef) {
         let Some(n) = self.notes.get(note) else {
             return;
@@ -562,8 +568,25 @@ impl Engine {
         if n.released {
             return;
         }
+        let pedal = self.pedal.get(usize::from(n.host.channel)) == Some(&true);
+        if n.pedal_held {
+            // Already ended once: its sound waits for the pedal.
+            if !pedal {
+                self.release(note);
+            }
+            return;
+        }
         if n.origin != Origin::Host {
             self.release_callbacks(note);
+        }
+        if pedal {
+            if let Some(n) = self.notes.get_mut(note)
+                && !n.released
+            {
+                n.key_up = true;
+                n.pedal_held = true;
+            }
+            return;
         }
         self.release(note);
     }

@@ -217,6 +217,114 @@ fn a_callback_knows_its_event_after_a_wait() {
     assert_eq!(e.last_message(), "60,127");
 }
 
+fn pedal(value: u8) -> Timed<Event> {
+    Timed {
+        at: SampleTime(0),
+        body: Event::midi1(0xB0, 64, value),
+    }
+}
+
+/// A piano script plays its own note for each key and ends it with
+/// `note_off` when the key goes up. Kontakt applies the sustain pedal after
+/// the scripts, so under the pedal the note-off is a key-up like any other:
+/// the note sounds on until the pedal lifts. It was cut at once, and a
+/// pedalled piece sounded as if the pedal did nothing.
+#[test]
+fn the_pedal_holds_a_note_the_script_ends() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare polyphonic $id
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 0)
+        end on
+        on release
+            note_off($id)
+        end on",
+    );
+    assert!((level(&mut e, &[pedal(127), on(60)]) - 0.5).abs() < 1e-3);
+    assert!(
+        (level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3,
+        "held by the pedal"
+    );
+    assert!((level(&mut e, &[]) - 0.5).abs() < 1e-3, "still held");
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+    // Without the pedal the same note-off ends it at once.
+    assert!((level(&mut e, &[on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(level(&mut e, &[off(60)]), 0.0);
+}
+
+/// Una Corda's way (see above): a `-1` child for the key, the key's release
+/// ignored. The key's going up ends the child, and under the pedal that
+/// ending holds like a key-up until the pedal lifts.
+#[test]
+fn the_pedal_holds_a_child_whose_keys_release_is_ignored() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let mut z = zone(&mut store, 0.5, 0);
+    z.keys = 72..=72;
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare $child
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $child := play_note($EVENT_NOTE + 12, $EVENT_VELOCITY, 0, -1)
+        end on
+        on release
+            if ($EVENT_ID # $child)
+                ignore_event($EVENT_ID)
+            end if
+        end on",
+    );
+    assert!((level(&mut e, &[pedal(127), on(60)]) - 0.5).abs() < 1e-3);
+    assert!(
+        (level(&mut e, &[off(60)]) - 0.5).abs() < 1e-3,
+        "held by the pedal"
+    );
+    assert_eq!(level(&mut e, &[pedal(0)]), 0.0);
+    level(&mut e, &[]);
+    assert_eq!(e.active_voices(), 0);
+}
+
+/// A script that takes CC 64 from the engine (`ignore_controller`) keeps the
+/// pedal for itself: the engine's pedal stays up and its `note_off` ends the
+/// note at once, as the script asked.
+#[test]
+fn a_script_that_takes_the_pedal_ends_its_notes_itself() {
+    let mut store = Store::new(StoreConfig::DEFAULT).unwrap();
+    let z = zone(&mut store, 0.5, 0);
+    let mut e = engine(
+        &store,
+        vec![z],
+        "on init
+            declare polyphonic $id
+        end on
+        on controller
+            if ($CC_NUM = 64)
+                ignore_controller
+            end if
+        end on
+        on note
+            ignore_event($EVENT_ID)
+            $id := play_note($EVENT_NOTE, $EVENT_VELOCITY, 0, 0)
+        end on
+        on release
+            note_off($id)
+        end on",
+    );
+    assert!((level(&mut e, &[pedal(127), on(60)]) - 0.5).abs() < 1e-3);
+    assert_eq!(level(&mut e, &[off(60)]), 0.0);
+}
+
 /// Areia: under the sustain pedal the script keeps its own note playing,
 /// and at pedal-up ends each one whose key is up (`%KEY_DOWN` 0: the key,
 /// not its sound, KSP manual). A pedalled key read as still down, and the
