@@ -39,13 +39,14 @@ rim_strength = 0.3           # 0..1
 gloss = 0.16                 # a glint down the left side, 0..1
 active_boost = 0.1           # lighter while sounding, 0..0.5
 
-# The light where a note meets the keys.
+# The light where a note meets the keys; beams, bloom and sparks too.
 [glow]
 strength = 0.85              # 0..1
 radius = 2.4                 # the halo's radius, in key widths
 flash = 1.0                  # how much it flares as the note strikes, 0..3
 white_hot = 0.6              # how white its heart burns at the strike, 0..1
 bloom = 0.45                 # light around a sounding bar, 0..1
+blend = "screen"             # how all light lands: screen | normal | multiply
 
 # Light rising from a key while it sounds.
 [beams]

@@ -11,12 +11,16 @@
 //! a full-screen stage.
 //!
 //! Four ship with KONTRA ([`presets`]): Midnight (the default), Neon,
-//! Ivory and Ember. Ember is warm by request: it is the one place an
+//! Ivory and Ember. A person's own are `.toml` files in a folder the host
+//! reads as the editor opens ([`load`]; the plugin's is `kontra-v3/designs`
+//! in the user's config folder, on a Mac `~/Library/Application
+//! Support/kontra-v3/designs`), listed after them ([`all`]). Ember is warm by request: it is the one place an
 //! orange is drawn, opted into by name; the default keeps DESIGN.md's No
 //! Orange Rule.
 
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use mui::prelude::Color;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -181,7 +185,22 @@ pub struct Bars {
     pub active_boost: f64,
 }
 
-/// The light where a note meets the keys.
+/// How light lands on what is under it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Blend {
+    /// Painted over it.
+    Normal,
+    /// Added to it, as light on a dark field: two glows are brighter
+    /// than one, and none darkens.
+    #[default]
+    Screen,
+    /// Tinting it, as ink on paper: for a light field.
+    Multiply,
+}
+
+/// The light where a note meets the keys: the halos, the bloom around
+/// sounding bars, the beams and the sparks all composite through `blend`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Glow {
@@ -195,6 +214,7 @@ pub struct Glow {
     pub white_hot: f64,
     /// The light around a sounding bar, 0..1.
     pub bloom: f64,
+    pub blend: Blend,
 }
 
 /// Light rising from a key while it sounds.
@@ -334,6 +354,7 @@ impl Default for Glow {
             flash: 1.0,
             white_hot: 0.6,
             bloom: 0.45,
+            blend: Blend::Screen,
         }
     }
 }
@@ -541,13 +562,64 @@ pub fn presets() -> &'static [Arc<Design>] {
     })
 }
 
-/// The Design called `name` (any case), else the default: a name saved by
-/// a build that had one this build lacks still opens.
+/// The Designs the user wrote ([`load`]).
+static MINE: RwLock<Vec<Arc<Design>>> = RwLock::new(Vec::new());
+
+/// Reads every `.toml` file in `dir` as a Design of the user's own, listed
+/// after those that ship, in place of what an earlier call read; a folder
+/// that is not there holds none. What was wrong with each file comes back:
+/// its warnings, or why it could not be read (it is then left out).
+pub fn load(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map(|entries| entries.filter_map(|e| Some(e.ok()?.path())).collect())
+        .unwrap_or_default();
+    files.retain(|f| {
+        f.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
+    });
+    files.sort();
+    let mut mine = Vec::new();
+    let mut problems = Vec::new();
+    for file in files {
+        let read = std::fs::read_to_string(&file).map_err(|e| e.to_string());
+        match read.and_then(|src| Design::from_toml(&src)) {
+            Ok((mut design, warnings)) => {
+                // Named by its file when it does not say.
+                if design.meta.name == Meta::default().name
+                    && let Some(stem) = file.file_stem()
+                {
+                    design.meta.name = stem.to_string_lossy().into_owned();
+                }
+                if !warnings.is_empty() {
+                    problems.push((file, warnings));
+                }
+                mine.push(Arc::new(design));
+            }
+            Err(why) => problems.push((file, vec![why])),
+        }
+    }
+    *MINE.write().unwrap_or_else(PoisonError::into_inner) = mine;
+    problems
+}
+
+/// Every Design on offer: those that ship, then the user's own.
+#[must_use]
+pub fn all() -> Vec<Arc<Design>> {
+    let mine = MINE.read().unwrap_or_else(PoisonError::into_inner);
+    presets().iter().chain(mine.iter()).cloned().collect()
+}
+
+/// The Design called `name` (any case), the user's own first, else the
+/// default: a name saved by a build that had one this build lacks still
+/// opens.
 #[must_use]
 pub fn named(name: &str) -> Arc<Design> {
+    let name = name.trim();
+    let mine = MINE.read().unwrap_or_else(PoisonError::into_inner);
     let all = presets();
-    all.iter()
-        .find(|d| d.meta.name.eq_ignore_ascii_case(name.trim()))
+    mine.iter()
+        .chain(all)
+        .find(|d| d.meta.name.eq_ignore_ascii_case(name))
         .or(all.first())
         .cloned()
         .unwrap_or_default()
@@ -623,6 +695,41 @@ mod tests {
         assert!(Design::from_toml("[glow]\nstrength = \"lots\"\n").is_err());
         assert!(Design::from_toml("[notes]\nrim = \"red\"\n").is_err());
         assert!(Design::from_toml("not = toml = at all").is_err());
+    }
+
+    #[test]
+    fn a_folder_of_the_users_own_designs_joins_the_list() {
+        let dir = std::env::temp_dir().join(format!("kontra-designs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, src: &str| std::fs::write(dir.join(name), src).unwrap();
+        write("Dusk.toml", "[glow]\nstrength = 0.3\n");
+        write(
+            "b.toml",
+            "[meta]\nname = \"Sea Glass\"\n[notes]\nwidth = 9.0\n",
+        );
+        write("broken.toml", "[glow\n");
+        write("notes.txt", "not a design");
+        let problems = load(&dir);
+        let names: Vec<String> = all().iter().map(|d| d.meta.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["Midnight", "Neon", "Ivory", "Ember", "Dusk", "Sea Glass"]
+        );
+        assert!(
+            (named("dusk").glow.strength - 0.3).abs() < 1e-12,
+            "named by its file"
+        );
+        assert!(
+            (named("Sea Glass").notes.width - 1.).abs() < 1e-12,
+            "clamped"
+        );
+        // The clamp and the broken file are said; the text file is no Design.
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems.iter().any(|(f, _)| f.ends_with("broken.toml")));
+        // Read again from an empty folder: they are gone.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(load(&dir).is_empty());
+        assert_eq!(all().len(), 4);
     }
 
     #[test]

@@ -33,7 +33,7 @@ strength = 1.0
 radius = 3.0
 flash = 1.6
 white_hot = 0.75
-bloom = 0.7
+bloom = 0.5
 
 [beams]
 strength = 0.55

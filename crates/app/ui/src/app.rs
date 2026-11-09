@@ -860,9 +860,9 @@ fn keys(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 }
 
 /// Which [`design`] the falling notes are drawn in: a dropdown of those
-/// that ship.
+/// that ship, then the user's own.
 fn design_picker(ui: &mut Ui, v: &mut View) -> El {
-    let all = design::presets();
+    let all = design::all();
     let names: Vec<&str> = all.iter().map(|d| d.meta.name.as_str()).collect();
     let current = design::named(&v.design);
     let at = names.iter().position(|n| *n == current.meta.name);

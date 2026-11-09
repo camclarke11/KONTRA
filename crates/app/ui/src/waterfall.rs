@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use mui::prelude::*;
 
-use crate::design::{self, Design, Shading};
+use crate::design::{self, Blend, Design, Shading};
 use crate::keyboard::{black, layout};
 use crate::sparks::{self, Ground, Spark};
 
@@ -574,8 +574,11 @@ pub struct Show {
     pub design: Arc<Design>,
 }
 
-/// Everything the falling notes draw on a canvas of `size`.
-fn draw(show: &Show, size: Size) -> Vec<Draw> {
+/// Everything the falling notes draw on a canvas of `size`, in two
+/// layers: what is lit (the field, the bars, the lines) and the light
+/// itself (beams, bloom, halos, sparks), which composites over it through
+/// its Design's blend, so light adds to light.
+fn draw(show: &Show, size: Size) -> (Vec<Draw>, Vec<Draw>) {
     let (d, at) = (&*show.design, show.at);
     let (w, h) = (size.width, size.height);
     let keys = layout(show.range, w);
@@ -586,6 +589,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
         .map_or(w / 52., |k| k.2)
         .max(1.);
     let mut out = Vec::with_capacity(256);
+    let mut light = Vec::with_capacity(256);
     field(&mut out, d, at, size);
     lanes(&mut out, d, &keys, show.range, size);
     let hands = show.notes.by_hand(d);
@@ -631,11 +635,11 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
                 (0.85, c.with_alpha(a * 0.32)),
                 (1., c.with_alpha(a * 0.5)),
             ];
-            out.push(Draw::fill(cone, Gradient::linear(180., stops)));
+            light.push(Draw::fill(cone, Gradient::linear(180., stops)));
         }
     }
     // Bars: naturals first, so a sharp's lies over its neighbours', as its
-    // key does; each sounding one's bloom behind them all.
+    // key does; each sounding one in a bloom.
     let mut bars = Vec::with_capacity(near.len());
     for sharp in [false, true] {
         for n in near.iter().filter(|n| black(n.key) == sharp) {
@@ -651,7 +655,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
                 let v = f64::from(n.velocity) / 127.;
                 let a = d.glow.bloom * (0.5 + 0.5 * v) * (0.7 + 0.3 * flash(at - n.start));
                 bloom(
-                    &mut out,
+                    &mut light,
                     (x + bw / 2., y, (y + bh).min(h + unit)),
                     bw,
                     unit * 0.55,
@@ -677,7 +681,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
             let a = d.glow.strength * p.level * (0.4 + 0.6 * v);
             let r = d.glow.radius * unit * (1. + 0.22 * f);
             halo(
-                &mut out,
+                &mut light,
                 cx,
                 h,
                 r,
@@ -695,7 +699,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
                 )
             };
             halo(
-                &mut out,
+                &mut light,
                 cx,
                 h,
                 unit * 0.75,
@@ -703,7 +707,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
                 (a * (0.55 + 0.45 * f).min(1.)) as f32,
             );
             flare(
-                &mut out,
+                &mut light,
                 (cx, h),
                 unit * (0.4 + 1.1 * f),
                 unit * 0.32,
@@ -742,7 +746,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
             (core + (1. - core) * 0.35, c.with_alpha(a * 0.16)),
             (1., c.with_alpha(0.)),
         ];
-        out.push(Draw::fill(
+        light.push(Draw::fill(
             disc(s.x, s.y, reach),
             Gradient::radial((0.5, 0.5), 0.5, stops),
         ));
@@ -750,7 +754,7 @@ fn draw(show: &Show, size: Size) -> Vec<Draw> {
     vignette(&mut out, d, size);
     // The pedal over the vignette: it is read, not just seen.
     pedal(&mut out, d, show.notes.pedal(), at, size, unit);
-    out
+    (out, light)
 }
 
 /// The field: its gradient, and soft light drifting with the song.
@@ -982,11 +986,21 @@ fn vignette(out: &mut Vec<Draw>, d: &Design, size: Size) {
 /// the keybed under them; any size, as every length scales with it.
 #[must_use]
 pub fn falling(show: Show) -> El {
-    let face = canvas(move |s| draw(&show, s))
+    let blend = match show.design.glow.blend {
+        Blend::Normal => Mix::Normal,
+        Blend::Screen => Mix::Screen,
+        Blend::Multiply => Mix::Multiply,
+    };
+    let lit = show.clone();
+    let face = canvas(move |s| draw(&lit, s).0)
         .w(Len::Pct(100.))
         .h(Len::Pct(100.));
+    let light = canvas(move |s| draw(&show, s).1)
+        .w(Len::Pct(100.))
+        .h(Len::Pct(100.))
+        .blend(blend);
     // A node clips what is inside it, not its own drawing: hence the stack.
-    stack![face]
+    stack![face, light]
         .w(Len::Pct(100.))
         .h(Len::Pct(100.))
         .clip()
@@ -1260,6 +1274,20 @@ mod tests {
         assert!(Pedal::default().is_empty());
         assert!(Pedal::new([(1., 0, 0)]).is_empty());
         assert_eq!(Pedal::default().down(0., 5.).count(), 0);
+        // As a line: a pedal that jumps steps, held flat between.
+        let line = pedal.profile(0., 5.);
+        assert_eq!(line.first(), Some(&(0., 0.)));
+        assert_eq!(line.get(1..3), Some(&[(1., 0.), (1., 1.)][..]), "{line:?}");
+        assert_eq!(line.last(), Some(&(5., 0.)));
+        // A foot sent continuously, every 20 ms, slopes from one to the next.
+        let foot = Pedal::new((0..=10).map(|i| (f64::from(i) * 0.02, 0, (i * 12) as u8)));
+        let slope = foot.profile(-1., 1.);
+        assert_eq!(slope.len(), 2 + 1 + 11, "{slope:?}");
+        assert!(slope.windows(2).all(|w| w[1].0 >= w[0].0), "in time order");
+        assert!(
+            slope.windows(2).skip(2).all(|w| w[1].0 > w[0].0),
+            "no steps"
+        );
         // Notes carry their song's pedal.
         let notes = Notes::new(vec![note(0., 1., 60)]).with_pedal(pedal);
         assert_eq!(notes.pedal().depth(1.5), 1.);
@@ -1273,7 +1301,9 @@ mod tests {
             range: (36, 107),
             design: design::named(design),
         };
-        draw(&show, size)
+        let (mut lit, light) = draw(&show, size);
+        lit.extend(light);
+        lit
     }
 
     #[test]

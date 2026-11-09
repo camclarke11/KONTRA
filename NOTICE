@@ -23,6 +23,12 @@ supply their own instruments and samples. The source tree includes
 upstream codec test fixtures and a font under separate terms, as
 described in THIRD_PARTY.md.
 
+The falling-notes view (crates/app/ui: waterfall.rs, sparks.rs,
+design.rs) ports formulas and its Design format from piano-viz,
+Copyright (c) 2026 kyan0s (MIT OR Apache-2.0, used under MIT), and
+follows the look of MIDIVisualizer, Copyright (c) 2020 Simon Rodriguez
+(MIT). Their notices and what was taken are in THIRD_PARTY.md.
+
 The project's license grants no rights in Kontakt, third-party library
 content, scripts, artwork or access credentials. Technical compatibility
 does not establish authorization to access or redistribute that material.
