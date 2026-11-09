@@ -580,7 +580,7 @@ pub(crate) mod tests {
     }
 
     /// A track from (tick, bytes) in order, closed with end of track.
-    fn track(events: &[(usize, &[u8])]) -> Vec<u8> {
+    pub(super) fn track(events: &[(usize, &[u8])]) -> Vec<u8> {
         let mut body = Vec::new();
         let mut last = 0;
         for &(tick, bytes) in events {
@@ -592,7 +592,7 @@ pub(crate) mod tests {
         chunk(b"MTrk", &body)
     }
 
-    fn file(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
+    pub(super) fn file(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
         let mut header = Vec::new();
         header.extend(format.to_be_bytes());
         header.extend((tracks.len() as u16).to_be_bytes());
@@ -862,3 +862,6 @@ pub(crate) mod tests {
         assert_eq!(events, [(0, b), (0, a), (5, a), (5, c)]);
     }
 }
+
+#[cfg(test)]
+mod render;
