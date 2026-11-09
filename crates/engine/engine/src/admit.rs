@@ -115,6 +115,9 @@ impl Engine {
                 // a stopping fade stays, as a voice's does, unless a shorter one comes.
                 let ending = matches!(n.fade, Some((FadeTarget::End, _)));
                 n.released |= target == FadeTarget::End && n.started;
+                // A stopped note is no longer the pedal's: it waits for no
+                // pedal-up (its event would never end) and hears no release.
+                n.pedal_held &= target != FadeTarget::End;
                 if !matches!(n.fade, Some((FadeTarget::End, left))
                     if target != FadeTarget::End || frames >= left)
                 {

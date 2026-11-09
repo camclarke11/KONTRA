@@ -58,7 +58,14 @@ impl Engine {
         self.behaviour.set_cc(channel, controller, value);
         self.output_controller(controller, value);
         let mut hits = std::mem::take(&mut self.hits);
-        if controller == 64 {
+        // The pedal is a switch at the MIDI 1.0 threshold (CC 64: 63 and
+        // below off, 64 and above on). Kontakt's own threshold is not
+        // measured; nothing documents it shortening releases in between,
+        // and half-pedalling pianos script it from `%CC[64]`. A script
+        // that bypasses the system pedal (`NO_SYS_SCRIPT_PEDAL`) leaves it
+        // up and sustains its notes itself.
+        let bypassed = plan.scripts.iter().any(|s| s.bypasses_pedal);
+        if controller == 64 && !bypassed {
             let down = value >= 64;
             if let Some(p) = self.pedal.get_mut(usize::from(channel)) {
                 *p = down;
@@ -67,7 +74,7 @@ impl Engine {
                 self.notes
                     .select(&mut hits, |n| n.pedal_held && n.host.channel == channel);
                 for &note in &hits {
-                    self.release(note);
+                    self.pedal_up(note);
                 }
             }
         }

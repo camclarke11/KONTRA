@@ -48,6 +48,12 @@ pub struct ScriptPlan {
     /// the key's length (KSP `play_note(.., -1)`); otherwise they play on
     /// until the script ends them (UVI `postEvent`).
     pub held_release_ends_children: bool,
+    /// The script bypasses the sampler's own sustain pedal (KSP
+    /// `SET_CONDITION(NO_SYS_SCRIPT_PEDAL)`: "the system script which
+    /// sustains notes when CC# 64 is received will be bypassed"): CC 64
+    /// holds no note, and the script sustains its notes itself. It applies
+    /// to the whole instrument, whichever slot sets it.
+    pub bypasses_pedal: bool,
     /// MIDI controllers that move this script's controls.
     pub links: Vec<CcLink>,
 }

@@ -2369,6 +2369,7 @@ fn script_controller_callback_links_indirect_route_evaluations() {
         arrays: Vec::new(),
         hears_own_releases: false,
         held_release_ends_children: false,
+        bypasses_pedal: false,
         links: vec![],
     });
     let mut engine = Engine::new_traced(Arc::new(plan), store.client(), RATE, 256);
