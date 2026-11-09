@@ -149,6 +149,48 @@ fn what_the_player_plays_reaches_the_editor_and_a_songs_notes_do_not() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A piano recording dropped on the editor becomes a MIDI song in the
+/// transcriptions folder, listed and playing. It needs the model and a
+/// recording: set KONTRA_TRANSCRIBE_MODEL and KONTRA_TRANSCRIBE_AUDIO to
+/// run it (it is skipped otherwise; the model is not in the repository).
+#[test]
+fn a_dropped_recording_becomes_a_song_that_plays() {
+    let (Some(_), Some(audio)) = (
+        std::env::var_os("KONTRA_TRANSCRIBE_MODEL"),
+        std::env::var_os("KONTRA_TRANSCRIBE_AUDIO"),
+    ) else {
+        return;
+    };
+    let empty = Saved {
+        version: kontra_host::state::VERSION,
+        parts: Vec::new(),
+    };
+    let (params, _dsp) = activate(&empty.write());
+    let folder = std::env::temp_dir().join(format!("kontra-made-{}", std::process::id()));
+    params
+        .shared
+        .transcribe
+        .start(PathBuf::from(audio), folder.clone());
+    assert!(params.shared.transcribe.shown().job.is_some(), "under way");
+    let started = std::time::Instant::now();
+    let made = loop {
+        if let (Some(made), _) = params.shared.transcribe.tick() {
+            break made;
+        }
+        assert!(started.elapsed().as_secs() < 300, "it finishes");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let made = made.expect("a song");
+    assert!(params.shared.transcribe.shown().job.is_none());
+    assert_eq!(made.parent(), Some(folder.as_path()));
+    let song = crate::song::Song::open(&made, &kontra_library::Touch::NONE)
+        .unwrap()
+        .0;
+    assert!(song.notes.len() > 20, "{} notes", song.notes.len());
+    assert!(!song.notes.pedal().is_empty(), "and the pedal");
+    std::fs::remove_dir_all(&folder).ok();
+}
+
 fn note(on: bool, key: u8) -> moose::prelude::Event {
     let body = if on {
         EventBody::NoteOn {

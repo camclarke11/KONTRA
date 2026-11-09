@@ -33,6 +33,8 @@ pub enum Pick {
     Songs,
     /// The folder recordings and exports go to ([`crate::record`]).
     Recordings,
+    /// A recording to transcribe into a song ([`crate::transcribe`]).
+    Audio,
 }
 
 impl Pick {
@@ -42,6 +44,7 @@ impl Pick {
             Self::Song => "A MIDI file to play",
             Self::Songs => "A folder of MIDI files",
             Self::Recordings => "A folder for recordings and exports",
+            Self::Audio => "A piano recording to transcribe",
         }
     }
 }
@@ -101,6 +104,15 @@ impl Dialog {
                     extensions: SONG_EXTENSIONS.map(String::from).to_vec(),
                 }],
             ),
+            Pick::Audio => (
+                DialogKind::OpenFile { multiple: false },
+                vec![DialogFilter {
+                    name: "Recording".into(),
+                    extensions: kontra_transcribe::audio::EXTENSIONS
+                        .map(String::from)
+                        .to_vec(),
+                }],
+            ),
         };
         let request = DialogRequest {
             parent: None,
@@ -129,6 +141,9 @@ impl Dialog {
                 match pick {
                     Pick::Folder | Pick::Songs | Pick::Recordings => d.pick_folder(),
                     Pick::Song => d.add_filter("MIDI file", &SONG_EXTENSIONS).pick_file(),
+                    Pick::Audio => d
+                        .add_filter("Recording", &kontra_transcribe::audio::EXTENSIONS)
+                        .pick_file(),
                 }
             })
             .ok()

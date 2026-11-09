@@ -12,7 +12,7 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         ui,
         "settings-thru",
         if app.midi_thru { "On" } else { "Off" },
-        "Pass MIDI through to the host",
+        "MIDI out: send the song and what you play to other apps, through a MIDI port named KONTRA",
         app.midi_thru,
     );
     if thru.changed {

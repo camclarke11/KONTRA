@@ -721,6 +721,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 // Panic stops a song too, then ends every note as before.
                 Action::Panic => {
                     p.shared.song.stop();
+                    p.shared.midi_out.panic();
                     tracker.clear(Instant::now());
                 }
                 Action::Songs(app::SongAction::Play(path)) => {
@@ -796,9 +797,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         let folders: Vec<_> = paths.iter().filter(|p| p.is_dir()).cloned().collect();
         // One song plays at a time: the first dropped.
         let song = paths.iter().find(|p| is_song(p)).cloned();
+        // A recording becomes one ([`crate::transcribe`]): the first dropped.
+        let recording = (paths.iter())
+            .find(|p| kontra_transcribe::audio::is_audio(p))
+            .cloned();
         if dropped {
             if let Some(path) = &song {
                 dropping.shared.request(Request::Song(path.clone()));
+            }
+            if let Some(path) = &recording {
+                dropping.shared.request(Request::Transcribe(path.clone()));
             }
             for path in &folders {
                 dropping.shared.request(Request::AddRoot(path.clone()));
@@ -810,7 +818,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 });
             }
         }
-        !instruments.is_empty() || !folders.is_empty() || song.is_some()
+        !instruments.is_empty() || !folders.is_empty() || song.is_some() || recording.is_some()
     })
     .changed(move || {
         // Only events draw: a change the tick or the view marked, or a

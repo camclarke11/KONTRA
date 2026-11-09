@@ -221,6 +221,10 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let shelves = shelves(ui, app);
     let list = list(ui, app, out);
     let touch = touch_ups(ui, app, out);
+    // A recording made into a song ([`crate::transcribe`]).
+    let mut asked = Vec::new();
+    let transcribe = crate::transcribe::control(ui, &app.transcribe, &mut asked);
+    out.extend(asked.into_iter().map(Action::Transcribe));
     col![
         row![search.el.grow(1).min_w(0), add.el, hide.el]
             .gap(TIGHT)
@@ -228,6 +232,8 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .pad(kit::edges(SPACE, SPACE, 0., SPACE))
             .shrink(0),
         tabs.shrink(0),
+        rule(),
+        transcribe,
         rule(),
         shelves.shrink(0),
         rule(),

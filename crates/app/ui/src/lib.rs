@@ -24,6 +24,7 @@ pub mod record;
 pub mod sparks;
 pub mod stage;
 pub mod theme;
+pub mod transcribe;
 pub mod view;
 pub mod waterfall;
 

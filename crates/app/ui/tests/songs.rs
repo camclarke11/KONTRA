@@ -302,3 +302,49 @@ fn the_keyboard_bar_names_the_chord_from_the_keys_alone_without_the_tab() {
     settle(&mut ui, &mut app);
     assert!(!shown(&ui, "song-chord"));
 }
+
+/// The Songs tab turns a recording into a song: "Transcribe a recording…"
+/// asks for one once the model is there (and says what is missing when it
+/// is not); while one is under way it shows how far and can stop it; then
+/// it says what it made.
+#[test]
+fn a_recording_is_transcribed_from_the_songs_tab() {
+    use kontra_ui::transcribe::{Do, Transcribing};
+    let mut ui = kontra_ui::ui();
+    let mut app = editor();
+    app.view.format = Format::Songs;
+    settle(&mut ui, &mut app);
+    assert!(shown(&ui, "transcribe"));
+    assert!(
+        click(&mut ui, &mut app, "transcribe").is_empty(),
+        "no model, nothing asked"
+    );
+    app.transcribe.ready = true;
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        click(&mut ui, &mut app, "transcribe"),
+        [Action::Transcribe(Do::Pick)]
+    );
+    app.transcribe = Transcribing {
+        job: Some(("Nocturne take.m4a".into(), 0.42)),
+        ready: true,
+        ..Transcribing::default()
+    };
+    settle(&mut ui, &mut app);
+    assert!(!shown(&ui, "transcribe"));
+    assert!(shown(&ui, "transcribing"));
+    assert_eq!(
+        click(&mut ui, &mut app, "transcribe-cancel"),
+        [Action::Transcribe(Do::Cancel)]
+    );
+    app.transcribe = Transcribing {
+        last: Some("Made Nocturne take.mid".into()),
+        ready: true,
+        ..Transcribing::default()
+    };
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        text(&ui, "transcribe-last").as_deref(),
+        Some("Made Nocturne take.mid")
+    );
+}

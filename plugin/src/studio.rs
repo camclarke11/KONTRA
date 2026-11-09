@@ -16,6 +16,8 @@ pub fn fill(shared: &Shared, app: &mut App) {
     app.record = shared.record.shown();
     app.practice = shared.song.practice.shown();
     app.export = shared.export.shown(shared.song.path().as_deref());
+    app.transcribe = shared.transcribe.shown();
+    app.midi_thru = shared.midi_out.is_on();
     // Practising, the song stops and starts at the player's notes: shown
     // where the audio thread has it, not eased (which runs on past a stop
     // and falls behind a start).
@@ -32,6 +34,7 @@ pub fn fill(shared: &Shared, app: &mut App) {
 pub fn played(shared: &Shared, event: &Event) {
     shared.record.keyboard(event);
     shared.live.keyboard(event);
+    shared.midi_out.keyboard(event);
     match *event {
         Event::NoteOn { note, .. } => shared.song.practice.press(note.key, true),
         Event::NoteOff(p) => {
@@ -139,6 +142,16 @@ pub fn act(shared: &Shared, action: &Action) -> bool {
             }
         },
         Action::Practice(hands) => shared.song.practice.set_hands(*hands),
+        Action::Transcribe(kontra_ui::transcribe::Do::Pick) => {
+            let from = dirs::audio_dir().or_else(dirs::home_dir);
+            shared.transcribe.dialog.ask(from);
+        }
+        Action::Transcribe(kontra_ui::transcribe::Do::Cancel) => shared.transcribe.cancel(),
+        Action::MidiThru(on) => {
+            if let Err(e) = shared.midi_out.set(*on) {
+                eprintln!("MIDI out: {e}");
+            }
+        }
         Action::Export(e) => match *e {
             export::Do::Audio => shared.request(Request::Export(crate::export::Kind::Audio)),
             export::Do::Video { height, fps } => {

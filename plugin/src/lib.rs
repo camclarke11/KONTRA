@@ -15,6 +15,7 @@ mod folder;
 mod input;
 mod live;
 mod look;
+mod midi_out;
 #[cfg(test)]
 mod playtest;
 mod practice;
@@ -26,6 +27,7 @@ mod stage;
 mod studio;
 #[cfg(test)]
 mod tests;
+mod transcribe;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
@@ -117,6 +119,10 @@ pub struct Shared {
     record: record::Recorder,
     /// What the player plays, for the keyboard strip to show ([`live`]).
     live: live::Live,
+    /// Recordings made into songs ([`transcribe`]).
+    transcribe: transcribe::Transcriber,
+    /// What KONTRA plays, sent on to other apps ([`midi_out`]).
+    midi_out: midi_out::MidiOut,
     /// Exporting the song to audio or video ([`export`]).
     export: export::Exports,
     /// The environment's practice, take and export ([`studio::Auto`]).
@@ -143,6 +149,8 @@ pub enum Request {
     Songbook(kontra_ui::app::SongAction),
     /// Export the song played last ([`export`]).
     Export(export::Kind),
+    /// Transcribe the recording at this path into a song ([`transcribe`]).
+    Transcribe(std::path::PathBuf),
 }
 
 impl Shared {
@@ -312,6 +320,7 @@ impl BackgroundTask for Tick {
                     }
                 }
                 Request::Export(kind) => export(p, rack, kind, &mut report),
+                Request::Transcribe(path) => p.shared.transcribe.start(path, transcribe::folder()),
             }
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
@@ -330,8 +339,24 @@ impl BackgroundTask for Tick {
         if let Some(path) = p.shared.songbook.dialog.picked() {
             book.add_folder(path);
         }
+        // A recording picked to transcribe; one transcribed is listed in
+        // the Songs tab and plays.
+        if let Some(path) = p.shared.transcribe.dialog.picked() {
+            p.shared.transcribe.start(path, transcribe::folder());
+        }
+        let (made, transcribing) = p.shared.transcribe.tick();
+        match made {
+            Some(Ok(song)) => {
+                if let Some(folder) = song.parent() {
+                    book.add_folder(folder.to_path_buf());
+                }
+                play_song(p, book, &song, &mut report);
+            }
+            Some(Err(e)) if e != "cancelled" => report.push(format!("Transcribe: {e}")),
+            _ => {}
+        }
         book.poll();
-        let song_moved = p.shared.song.tick();
+        let song_moved = p.shared.song.tick() | transcribing;
         // Recording and exporting: a take saved, an export finished.
         let studio_moved = studio(p, &mut report);
         let latency = align::update(p.align.value(), rack);
@@ -542,6 +567,8 @@ impl PluginLogic for Kontra {
         {
             song::sort_by_frame(&mut s.input);
         }
+        // All of it sent on to other apps, when MIDI out is on.
+        p.shared.midi_out.process(s.rate, &s.input);
         // The master ramps from the last block's gain to this one's.
         let target = db_to_linear(p.volume.value());
         let step = (target - s.gain) / frames.max(1) as f32;

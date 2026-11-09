@@ -75,6 +75,8 @@ pub struct App {
     pub practice: crate::practice::Practice,
     /// Exporting the song to audio or video ([`crate::export`]).
     pub export: crate::export::Exporting,
+    /// Transcribing a recording into a song ([`crate::transcribe`]).
+    pub transcribe: crate::transcribe::Transcribing,
     /// What the player plays: rising from the keys with no song, lighting
     /// the keys they strike under one ([`waterfall::Played`]).
     pub played: waterfall::Played,
@@ -452,6 +454,8 @@ pub enum Action {
     Practice(crate::practice::Hands),
     /// Export the song, or cancel the export ([`crate::export`]).
     Export(crate::export::Do),
+    /// Transcribe a recording into a MIDI song, or stop ([`crate::transcribe`]).
+    Transcribe(crate::transcribe::Do),
     Star(usize, bool),
     AddFolder,
     /// New parts take the next free MIDI channel; their own output pair.
@@ -576,7 +580,7 @@ fn song_control(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
 }
 
 /// Narrower than this, a window playing a song shows no load readouts in
-/// its header, so the song's transport, MIDI Thru and Panic fit.
+/// its header, so the song's transport, MIDI Out and Panic fit.
 const NARROW: f64 = 1100.;
 
 fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
@@ -657,7 +661,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         app.view.keyboard_hidden = !app.view.keyboard_hidden;
     }
     let song = song_control(ui, app, out);
-    let thru = button(ui, "midi-thru", "MIDI Thru", app.midi_thru);
+    let thru = button(ui, "midi-thru", "MIDI Out", app.midi_thru);
     if thru.changed {
         app.midi_thru = !app.midi_thru;
         out.push(Action::MidiThru(app.midi_thru));
@@ -687,7 +691,7 @@ fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         vrule().h(CONTROL * 0.6),
         keyboard.el,
         song,
-        thru.el.tip("Pass MIDI through to the host"),
+        thru.el.tip("Send the song and what you play to other apps (Splice INSTRUMENT, GarageBand, Logic) through a MIDI port named KONTRA: pick it as their MIDI input"),
         panic.el.tip("Stop every note"),
     ]);
     if !app.report.is_empty() {

@@ -297,6 +297,29 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Piano transcription: ByteDance's high-resolution piano transcription
+
+`crates/app/transcribe` (a recording made into a MIDI song) runs the model
+of "High-resolution Piano Transcription with Pedals by Regressing Onset and
+Offset Times" (Qiuqiang Kong, Bochen Li, Xuchen Song, Yuan Wan, Yuxuan Wang;
+ByteDance, 2020; arXiv:2010.01815), reviewed on 2026-11-09.
+
+- Code: [bytedance/piano_transcription](https://github.com/bytedance/piano_transcription),
+  Apache-2.0, and [piano_transcription_inference](https://github.com/qiuqiangkong/piano_transcription_inference)
+  0.0.6 (MIT by its package metadata). `crates/app/transcribe/src/post.rs`
+  ports its post-processing (`RegressionPostProcessor`, `piano_vad.py`:
+  peak picking with sub-frame shifts, note and pedal detection, their
+  thresholds) and `lib.rs` its segmenting (10 s segments 5 s apart, joined
+  by their middles); `tools/transcribe-model/export.py` loads its model
+  classes to export them. No source file was copied whole.
+- Model: `CRNN_note_F1=0.9677_pedal_F1=0.9186.pth`,
+  [zenodo.org/record/4034264](https://zenodo.org/record/4034264), Creative
+  Commons Attribution 4.0 International (md5
+  `22b961b77c1878239fec963362097045`). It is not in this repository; the
+  ONNX graph made from it (`piano-transcription.onnx`) is a format
+  conversion of those weights, under the same licence, attributed as
+  above and in the Songs tab's tooltip.
+
 ## CORE-MATH binary32 logarithm
 
 The retired v2 safe Rust binary32 logarithm in
