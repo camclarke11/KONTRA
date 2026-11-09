@@ -112,6 +112,8 @@ pub struct Shared {
     record: record::Recorder,
     /// Exporting the song to audio or video ([`export`]).
     export: export::Exports,
+    /// The environment's practice, take and export ([`studio::Auto`]).
+    auto: studio::Auto,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -352,6 +354,7 @@ fn export(p: &KontraParams, rack: &Rack, kind: export::Kind, report: &mut Vec<St
 /// taken, a recordings folder picked is kept. Whether the editor should
 /// draw what moved.
 fn studio(p: &KontraParams, report: &mut Vec<String>) -> bool {
+    p.shared.auto.tick(&p.shared);
     if let Some(folder) = p.shared.record.dialog.picked() {
         p.shared.record.set_folder(folder);
     }

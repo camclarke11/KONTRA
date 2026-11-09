@@ -2369,6 +2369,7 @@ dependencies = [
  "kontra-align",
  "kontra-format-sfz",
  "kontra-host",
+ "kontra-ir",
  "kontra-library",
  "kontra-protocol",
  "kontra-ui",

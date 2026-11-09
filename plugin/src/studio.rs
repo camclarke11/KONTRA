@@ -42,6 +42,80 @@ pub fn played(shared: &Shared, event: &Event) {
     }
 }
 
+/// What the environment asks of the standalone without the pointer, for
+/// tests and screenshots, as `KONTRA_PLAY` plays a song: read on the first
+/// tick, after the song starts.
+///
+/// - `KONTRA_PRACTICE=right|left|both`: practise those hands.
+/// - `KONTRA_RECORD=<seconds>`: record a take that long, into
+///   `KONTRA_RECORDINGS` if set; `KONTRA_COUNT_IN=1` counts it in.
+/// - `KONTRA_EXPORT=audio` or `video:<height>:<fps>`: export the song.
+#[derive(Default)]
+pub struct Auto {
+    read: std::sync::atomic::AtomicBool,
+    /// When the take started, and how long it runs.
+    take: std::sync::Mutex<Option<(Instant, f64)>>,
+}
+
+impl Auto {
+    /// On the tick. Tests read no environment: a stray `KONTRA_RECORD`
+    /// must not start takes in them.
+    pub fn tick(&self, shared: &Shared) {
+        let var = |name: &str| std::env::var(name).ok().filter(|_| !cfg!(test));
+        self.tick_with(shared, var);
+    }
+
+    /// [`Auto::tick`], reading the environment from `var`.
+    fn tick_with(&self, shared: &Shared, var: impl Fn(&str) -> Option<String>) {
+        // Taken out first: the guard of an `if let` lives through its block.
+        let take = *crate::lock(&self.take);
+        if let Some((started, seconds)) = take
+            && started.elapsed().as_secs_f64() >= seconds
+        {
+            shared.record.stop();
+            *crate::lock(&self.take) = None;
+        }
+        if self.read.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let var = |name: &str| var(name).filter(|v| !v.is_empty());
+        let hands = match var("KONTRA_PRACTICE").as_deref() {
+            Some("right") => Some(Hands::Right),
+            Some("left") => Some(Hands::Left),
+            Some("both") => Some(Hands::Both),
+            _ => None,
+        };
+        if let Some(hands) = hands {
+            shared.song.practice.set_hands(hands);
+        }
+        if let Some(folder) = var("KONTRA_RECORDINGS") {
+            shared.record.set_folder(folder.into());
+        }
+        if let Some(seconds) = var("KONTRA_RECORD").and_then(|s| s.parse::<f64>().ok()) {
+            shared.record.set_count_in(var("KONTRA_COUNT_IN").is_some());
+            shared.record.start();
+            *crate::lock(&self.take) = Some((Instant::now(), seconds));
+        }
+        let kind = match var("KONTRA_EXPORT")
+            .as_deref()
+            .map(|v| v.split(':').collect::<Vec<_>>())
+        {
+            Some(v) if v.first() == Some(&"audio") => Some(crate::export::Kind::Audio),
+            Some(v) if v.first() == Some(&"video") => {
+                let n = |i: usize, or: u32| v.get(i).and_then(|x| x.parse().ok()).unwrap_or(or);
+                Some(crate::export::Kind::Video {
+                    height: n(1, 1080),
+                    fps: n(2, 30),
+                })
+            }
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            shared.request(Request::Export(kind));
+        }
+    }
+}
+
 /// Carries out `action` if it is recording's, practice's or exporting's;
 /// whether it was.
 pub fn act(shared: &Shared, action: &Action) -> bool {
@@ -302,6 +376,8 @@ mod tests {
         r.set_folder(scratch.0.join("takes"));
         r.set_count_in(true);
         r.start();
+        // A song plays along: the take is the player's alone.
+        params.shared.song.play(song());
         // The count-in is 2 s (200 blocks); the take is played 2.5 s in.
         let audio = render(&params, &mut dsp, 0..300, |n| match n {
             250 => vec![note(true, 64)],
@@ -317,6 +393,7 @@ mod tests {
         let take = r.saved().expect("saved on the tick");
         assert_eq!(take, scratch.0.join("takes/Recording 1.mid"));
         let song = Song::open(&take).unwrap();
+        assert_eq!(song.notes.len(), 1, "the song's notes are not in it");
         let n = song.notes.between(0.0, 10.0).next().copied().unwrap();
         assert_eq!((n.key, n.velocity), (64, 100));
         assert!(
@@ -332,6 +409,49 @@ mod tests {
         assert_eq!(
             params.shared.song.status().map(|s| s.0),
             Some("Recording 1.mid".into())
+        );
+    }
+
+    /// The environment's take runs its length on the ticks and is saved;
+    /// its practice is set once. (The tick that stopped the take once held
+    /// a lock it took again, and hung.)
+    #[test]
+    fn the_environment_records_a_take_and_sets_practice() {
+        let scratch = Scratch::new("studio-auto");
+        let (params, mut dsp) = clicks(&scratch.0);
+        let folder = scratch.0.join("takes").display().to_string();
+        let env = |name: &str| match name {
+            "KONTRA_RECORD" => Some("0.2".to_owned()),
+            "KONTRA_RECORDINGS" => Some(folder.clone()),
+            "KONTRA_PRACTICE" => Some("left".to_owned()),
+            _ => None,
+        };
+        // The plugin's own read the (empty) environment on its first tick.
+        let auto = super::Auto::default();
+        auto.tick_with(&params.shared, env);
+        assert_eq!(
+            params.shared.song.practice.hands(),
+            kontra_ui::practice::Hands::Left
+        );
+        render(&params, &mut dsp, 0..5, |n| {
+            if n == 1 {
+                vec![note(true, 60)]
+            } else {
+                Vec::new()
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        // Read once: a second tick changes nothing but stops the take.
+        auto.tick_with(&params.shared, |_| Some("both".into()));
+        assert_eq!(
+            params.shared.song.practice.hands(),
+            kontra_ui::practice::Hands::Left
+        );
+        render(&params, &mut dsp, 5..7, |_| Vec::new());
+        Tick.run(&params);
+        assert_eq!(
+            params.shared.record.saved(),
+            Some(scratch.0.join("takes/Recording 1.mid"))
         );
     }
 

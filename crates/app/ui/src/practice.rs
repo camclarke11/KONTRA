@@ -14,10 +14,10 @@ pub enum Hands {
     /// The song plays through, waiting for nobody.
     #[default]
     Off,
-    /// The song's first voice (its first track and channel), or its notes
-    /// from middle C up when it has one voice.
+    /// The song's highest voice (a track and channel) on average, or its
+    /// notes from middle C up when it has one voice.
     Right,
-    /// Its second voice, or its notes below middle C.
+    /// Its lowest voice, or its notes below middle C.
     Left,
     /// Every note.
     Both,

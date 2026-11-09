@@ -281,6 +281,53 @@ mod tests {
         assert_eq!(out, Err("cancelled".into()));
     }
 
+    /// A sample far longer than its preload streams from disk as it plays:
+    /// each block waits for its pages, so the render has no gaps, and is
+    /// the same every time.
+    #[test]
+    fn a_streamed_sample_renders_whole_and_the_same_every_time() {
+        let scratch = Scratch::new("export-stream");
+        // Twenty seconds of a 480 Hz sine, unlooped.
+        let sine: Vec<i16> = (0..20 * 48_000)
+            .map(|n| (8000.0 * (std::f64::consts::TAU * 480.0 * n as f64 / 48_000.0).sin()) as i16)
+            .collect();
+        wav(&scratch.0.join("long.wav"), &sine);
+        let sfz = "<region> sample=long.wav lokey=0 hikey=127 pitch_keycenter=60 \
+                   pitch_keytrack=0 amp_veltrack=0 ampeg_release=0.05\n";
+        let held = Track {
+            name: "held".into(),
+            events: vec![(0.0, [0x90, 60, 100]), (10.0, [0x80, 60, 0])],
+        };
+        let song =
+            || Song::read("held.mid".into(), &write("held", 120.0, &[held.clone()])).unwrap();
+        let mix = Mix {
+            gain: 1.0,
+            align: false,
+        };
+        let render_once = || {
+            let mut instrument = kontra_format_sfz::parse(sfz, &scratch.0);
+            // Streamed as a DFD group is: a head of 6 KB resident, the rest
+            // read from disk as it plays.
+            for g in &mut instrument.groups {
+                g.stream = Some(kontra_ir::Stream {
+                    bytes_per_channel: 6144,
+                    grain: 512,
+                });
+            }
+            let setup =
+                move |rack: &mut Rack| rack.load_ir(0, instrument, None).map_err(|e| e.to_string());
+            render(setup, song(), mix, &Progress::default()).unwrap()
+        };
+        let a = render_once();
+        // Every 10 ms of the ten seconds sounds.
+        let quiet: Vec<f64> = (0..1000)
+            .map(|n| f64::from(n) / 100.0)
+            .filter(|&t| level(&a, t, t + 0.01) < 0.05)
+            .collect();
+        assert!(quiet.is_empty(), "gaps at {quiet:?}");
+        assert!(a == render_once(), "two renders differ");
+    }
+
     /// An empty rack renders the song's length of silence, and stops.
     #[test]
     fn an_empty_rack_renders_silence_as_long_as_the_song() {

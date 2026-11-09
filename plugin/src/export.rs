@@ -344,4 +344,104 @@ mod tests {
         assert!(outcome.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// A whole export by hand, with sound: `KONTRA_DEMO_MIDI` rendered
+    /// through a synthetic piano (a generated sample of decaying harmonics,
+    /// keytracked, its release a third of a second) into a WAV in
+    /// `KONTRA_DEMO_OUT`, then its video at 1080p30 with that WAV, each
+    /// timed against the song's length.
+    #[test]
+    #[ignore = "a demo: set KONTRA_DEMO_MIDI and KONTRA_DEMO_OUT"]
+    fn demo_export_through_a_synthetic_piano() {
+        let (Some(midi), Some(out)) = (
+            std::env::var_os("KONTRA_DEMO_MIDI").map(PathBuf::from),
+            std::env::var_os("KONTRA_DEMO_OUT").map(PathBuf::from),
+        ) else {
+            eprintln!("skipped: no KONTRA_DEMO_MIDI and KONTRA_DEMO_OUT");
+            return;
+        };
+        std::fs::create_dir_all(&out).unwrap();
+        // Middle C, three seconds: six harmonics, the higher dying faster.
+        let rate = 48_000.0;
+        let sample: Vec<i16> = (0..144_000)
+            .map(|n| {
+                let t = f64::from(n) / rate;
+                let x: f64 = (1..=6)
+                    .map(|h| {
+                        let h = f64::from(h);
+                        (std::f64::consts::TAU * 261.63 * h * t).sin() / h * (-t * 1.2 * h).exp()
+                    })
+                    .sum();
+                (x * 9000.0 * (t / 0.003).min(1.0)) as i16
+            })
+            .collect();
+        let data = 2 * sample.len() as u32;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF");
+        wav.extend((36 + data).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(48_000u32.to_le_bytes());
+        wav.extend(96_000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend(data.to_le_bytes());
+        wav.extend(sample.iter().flat_map(|s| s.to_le_bytes()));
+        std::fs::write(out.join("piano-c4.wav"), wav).unwrap();
+        let sfz = "<region> sample=piano-c4.wav lokey=0 hikey=127 pitch_keycenter=60 \
+                   amp_veltrack=80 ampeg_release=0.35\n";
+        let instrument = kontra_format_sfz::parse(sfz, &out);
+        let setup = move |rack: &mut kontra_host::rack::Rack| {
+            rack.load_ir(0, instrument, None).map_err(|e| e.to_string())
+        };
+        let song = Song::open(&midi).unwrap();
+        let length = song.length;
+        let started = std::time::Instant::now();
+        let mix = audio::Mix {
+            gain: 1.0,
+            align: false,
+        };
+        let audio = audio::render(setup, song, mix, &Progress::default()).unwrap();
+        let rendered = started.elapsed().as_secs_f64();
+        let wav = wav_path(&out, &midi);
+        wav::write(&wav, audio::RATE, &audio).unwrap();
+        let seconds = audio.len() as f64 / f64::from(audio::RATE);
+        let peak = audio
+            .iter()
+            .map(|m| m[0].abs().max(m[1].abs()))
+            .fold(0.0, f32::max);
+        eprintln!(
+            "audio: {length:.2} s song, {seconds:.2} s file (tail {:.2} s), peak {peak:.3}, \
+             rendered in {rendered:.2} s ({:.0}x real time): {}",
+            seconds - length,
+            seconds / rendered,
+            wav.display()
+        );
+        let Some(ffmpeg) = video::ffmpeg() else {
+            eprintln!("no ffmpeg: no video");
+            return;
+        };
+        let song = Song::open(&midi).unwrap();
+        let video = video::Video {
+            notes: &song.notes,
+            name: &song.name,
+            seconds,
+            height: 1080,
+            fps: 30,
+            audio: Some(&wav),
+        };
+        let mp4 = video_path(&out, &midi);
+        let started = std::time::Instant::now();
+        video::encode(&ffmpeg, &video, &mp4, &Progress::default()).unwrap();
+        let took = started.elapsed().as_secs_f64();
+        eprintln!(
+            "video: {} frames in {took:.1} s ({:.1}x real time): {}",
+            (seconds * 30.0).ceil(),
+            seconds / took,
+            mp4.display()
+        );
+    }
 }

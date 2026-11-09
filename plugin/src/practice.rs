@@ -1,7 +1,10 @@
 //! Practice ("wait") mode: the song waits at each note the player has to
 //! play until they play it, on their MIDI keyboard (or the computer's, or
 //! the editor's). They choose whose notes are theirs ([`Hands`]): the song
-//! does not play those, and plays the rest along with them.
+//! does not play those, and plays the rest along with them. Hands are
+//! voices (a track and channel each): the highest on average is the right
+//! hand, the lowest the left, whichever track a file puts first; a song of
+//! one voice splits at middle C.
 //!
 //! The song's clock asks the [`Gate`] how far it may go each block
 //! ([`crate::song`]); the gate stops it at the next chord the player has
@@ -40,15 +43,41 @@ fn keys(set: Keys) -> Vec<u8> {
     (0..128u8).filter(|&k| set & bit(k) != 0).collect()
 }
 
-/// Whether a note of `voice` on `key` is the player's to play.
-fn mine(hands: Hands, voices: u8, voice: u8, key: u8) -> bool {
-    match hands {
-        Hands::Off => false,
-        Hands::Both => true,
-        Hands::Right if voices < 2 => key >= SPLIT,
-        Hands::Left if voices < 2 => key < SPLIT,
-        Hands::Right => voice == 0,
-        Hands::Left => voice == 1,
+/// Which of a song's voices each hand plays: the highest on average is
+/// the right, the lowest the left; None when it has one voice, whose notes
+/// split at middle C.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Voices(Option<(u8, u8)>);
+
+impl Voices {
+    fn of(notes: &[Note]) -> Self {
+        let mut sums = [(0u64, 0u64); 256];
+        for n in notes {
+            if let Some(s) = sums.get_mut(usize::from(n.voice)) {
+                *s = (s.0 + u64::from(n.key), s.1 + 1);
+            }
+        }
+        let mean = |v: &(usize, &(u64, u64))| v.1.0 as f64 / v.1.1 as f64;
+        let heard = || sums.iter().enumerate().filter(|v| v.1.1 > 0);
+        let high = heard().max_by(|a, b| mean(a).total_cmp(&mean(b)));
+        let low = heard().min_by(|a, b| mean(a).total_cmp(&mean(b)));
+        let voice = |v: (usize, _)| u8::try_from(v.0).ok();
+        match (high.and_then(voice), low.and_then(voice)) {
+            (Some(right), Some(left)) if right != left => Self(Some((right, left))),
+            _ => Self(None),
+        }
+    }
+
+    /// Whether a note of `voice` on `key` is the player's with `hands`.
+    fn mine(self, hands: Hands, voice: u8, key: u8) -> bool {
+        match (hands, self.0) {
+            (Hands::Off, _) => false,
+            (Hands::Both, _) => true,
+            (Hands::Right, None) => key >= SPLIT,
+            (Hands::Left, None) => key < SPLIT,
+            (Hands::Right, Some((right, _))) => voice == right,
+            (Hands::Left, Some((_, left))) => voice == left,
+        }
     }
 }
 
@@ -168,8 +197,8 @@ struct Chord {
 pub struct Gate {
     /// The song's notes in start order.
     notes: Box<[Note]>,
-    /// How many voices the song has (tracks and channels with notes).
-    voices: u8,
+    /// Which voices are which hand's.
+    voices: Voices,
     /// The longest note: how far back a note sounding now can start.
     longest: f64,
     hands: Hands,
@@ -191,11 +220,7 @@ impl Gate {
             .between(f64::NEG_INFINITY, f64::INFINITY)
             .copied()
             .collect();
-        let voices = notes
-            .iter()
-            .map(|n| n.voice)
-            .max()
-            .map_or(0, |v| v.saturating_add(1));
+        let voices = Voices::of(&notes);
         let longest = notes.iter().map(|n| n.end - n.start).fold(0., f64::max);
         Self {
             notes,
@@ -206,13 +231,13 @@ impl Gate {
     }
 
     fn mine(&self, note: &Note) -> bool {
-        mine(self.hands, self.voices, note.voice, note.key)
+        self.voices.mine(self.hands, note.voice, note.key)
     }
 
     /// Whether the song plays `message` of `voice` itself: not a note of
     /// the player's.
     pub fn plays(&self, voice: u8, [status, key, _]: [u8; 3]) -> bool {
-        !matches!(status & 0xF0, 0x80 | 0x90) || !mine(self.hands, self.voices, voice, key)
+        !matches!(status & 0xF0, 0x80 | 0x90) || !self.voices.mine(self.hands, voice, key)
     }
 
     /// The chord whose first note is the hand's first from note `from` on.
@@ -530,6 +555,31 @@ mod tests {
         // The editor keyboard plays too.
         p.press(72, true);
         assert_eq!(run(&mut g, &p, 1000, 1), 1100);
+    }
+
+    /// Left hand first, as pedal-runs.mid has it; a third, middle voice is
+    /// neither hand's and the song plays it.
+    #[test]
+    fn the_hands_are_the_highest_and_lowest_voices() {
+        let notes = Notes::new(vec![
+            note(1.0, 36, 0),
+            note(1.0, 72, 1),
+            note(1.5, 55, 2),
+            note(2.0, 40, 0),
+        ]);
+        let mut g = Gate::new(&notes);
+        assert_eq!(g.voices, Voices(Some((1, 0))));
+        let p = Practice::default();
+        p.set_hands(Hands::Right);
+        assert_eq!(run(&mut g, &p, 0, 20), 1000);
+        assert_eq!(p.shown().want, [72]);
+        assert!(g.plays(0, [0x90, 36, 100]) && g.plays(2, [0x90, 55, 100]));
+        assert!(!g.plays(1, [0x90, 72, 100]));
+        p.set_hands(Hands::Left);
+        g.clock(&p, &[], 0, 100, RATE);
+        assert_eq!(p.shown().want, [36]);
+        assert!(!g.plays(0, [0x80, 40, 0]) && g.plays(1, [0x90, 72, 100]));
+        assert_eq!(Voices::of(&[]), Voices(None));
     }
 
     #[test]

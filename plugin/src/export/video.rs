@@ -292,6 +292,40 @@ mod tests {
         assert_eq!(seen, 5);
     }
 
+    /// Cancelled while encoding: ffmpeg is stopped and its file removed.
+    #[test]
+    fn a_cancelled_encode_leaves_no_file() {
+        let Some(ffmpeg) = ffmpeg() else {
+            eprintln!("skipped: no ffmpeg");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("kontra-video-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let notes = notes();
+        let video = Video {
+            notes: &notes,
+            name: "long.mid",
+            seconds: 600.0,
+            height: 144,
+            fps: 30,
+            audio: None,
+        };
+        let out = dir.join("long.mp4");
+        let progress = Progress::default();
+        let r = std::thread::scope(|s| {
+            s.spawn(|| {
+                while progress.done() < 0.01 {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                progress.cancel();
+            });
+            encode(&ffmpeg, &video, &out, &progress)
+        });
+        assert_eq!(r, Err("cancelled".into()));
+        assert!(!out.exists() && !out.with_extension("ffmpeg.log").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The real thing, when ffmpeg is installed: an MP4 of the right size,
     /// length and rate, with the WAV as its sound.
     #[test]
