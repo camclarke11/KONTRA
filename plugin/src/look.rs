@@ -13,7 +13,7 @@ const PART_TABS: [PartTab; 6] = [
     PartTab::Info,
     PartTab::Scripts,
 ];
-const FORMATS: [Format; 2] = [Format::Kontakt, Format::Uvi];
+const FORMATS: [Format; 3] = [Format::Kontakt, Format::Uvi, Format::Songs];
 const SHELVES: [Shelf; 3] = [Shelf::All, Shelf::Favorites, Shelf::Recent];
 
 fn index<T: PartialEq>(all: &[T], x: &T) -> u8 {

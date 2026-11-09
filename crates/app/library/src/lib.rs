@@ -24,6 +24,7 @@ mod cache;
 mod folder;
 mod name;
 mod prefs;
+mod songs;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ pub use cache::Cache;
 pub use folder::{Folder, natural};
 pub use name::{clean_name, product};
 pub use prefs::Prefs;
+pub use songs::{SongPrefs, Touch};
 
 /// A folder or `.ufs` bank the player added.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

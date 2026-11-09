@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod artwork;
+pub mod chord;
 pub mod icon;
 pub mod input;
 pub mod keyboard;
