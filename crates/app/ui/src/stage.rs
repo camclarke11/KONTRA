@@ -329,7 +329,8 @@ pub fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
             .disabled(),
         );
     }
-    // Over the keys at the window's foot, the keys faint through it. Over
+    // Over the keys at the window's foot (opaque: the sliders' tracks need
+    // the surface under them). Over
     // the falling notes instead, MUI's hit map stopped routing the pointer
     // to it after its first drag (a second seek-bar drag did nothing), so
     // it stays here until that is understood.
@@ -456,8 +457,7 @@ fn bar(ui: &mut Ui, app: &mut App, song: &Song, out: &mut Vec<Action>) -> El {
     .gap(TIGHT)
     .pad((SPACE * 1.5, TIGHT * 1.5))
     .w(Len::Pct(100.))
-    // The keys show faintly through it.
-    .fill(Role::Surface.alpha(0.88))
+    .fill(Role::Surface)
     .stroke(hairline())
     .stroke_width(1)
     .named("Transport")
