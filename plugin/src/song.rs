@@ -46,6 +46,12 @@ pub struct Song {
     pub length: f64,
     /// Its notes, for the editor to show falling onto the keyboard.
     pub notes: Notes,
+    /// By event, the voice of a note (its track and channel, as `notes`
+    /// numbers them); `u8::MAX` for the rest. Practice plays by voice.
+    voices: Vec<u8>,
+    /// Practice: the notes the song waits for the player to play
+    /// ([`crate::practice`]), set as it starts.
+    gate: crate::practice::Gate,
 }
 
 impl Song {
@@ -70,11 +76,22 @@ impl Song {
         if notes.is_empty() {
             return Err("it has no notes outside the drum channel (10) to play".into());
         }
+        let numbered = voices(&timeline);
+        let voices = (timeline.iter())
+            .map(|&(_, track, [status, ..])| match status & 0xF0 {
+                0x80 | 0x90 => numbered
+                    .binary_search(&(track, status & 15))
+                    .map_or(u8::MAX, |v| u8::try_from(v).unwrap_or(u8::MAX)),
+                _ => u8::MAX,
+            })
+            .collect();
         Ok(Self {
             name,
             events: timeline.into_iter().map(|(time, _, m)| (time, m)).collect(),
             length,
             notes,
+            voices,
+            gate: crate::practice::Gate::default(),
         })
     }
 }
@@ -85,12 +102,7 @@ impl Song {
 /// numbered in that order (a piano file's right hand first, then its left).
 fn notes(timeline: &[(f64, u16, Message)], length: f64) -> Notes {
     let on = |[status, _, velocity]: Message| status & 0xF0 == 0x90 && velocity > 0;
-    let mut voices: Vec<(u16, u8)> = (timeline.iter())
-        .filter(|e| on(e.2))
-        .map(|&(_, track, [status, ..])| (track, status & 15))
-        .collect();
-    voices.sort_unstable();
-    voices.dedup();
+    let voices = voices(timeline);
     // The note each key of each channel has open, by index into `out`.
     let mut open = vec![None; 16 * 128];
     let mut out: Vec<Note> = Vec::new();
@@ -118,6 +130,18 @@ fn notes(timeline: &[(f64, u16, Message)], length: f64) -> Notes {
         }
     }
     Notes::new(out)
+}
+
+/// The voices of `timeline` in order: each track and channel it strikes a
+/// note on.
+fn voices(timeline: &[(f64, u16, Message)]) -> Vec<(u16, u8)> {
+    let mut voices: Vec<(u16, u8)> = (timeline.iter())
+        .filter(|&&(_, _, [status, _, velocity])| status & 0xF0 == 0x90 && velocity > 0)
+        .map(|&(_, track, [status, ..])| (track, status & 15))
+        .collect();
+    voices.sort_unstable();
+    voices.dedup();
+    voices
 }
 
 /// `message` as the engine takes it: notes on the song's port, the rest as
@@ -345,18 +369,33 @@ impl Playing {
 
     /// This block's events at their frame in it, into `out` while it has
     /// room (the rest wait for the next block). Once its last event has
-    /// played: the frame in this block that event fell on.
-    fn block(&mut self, rate: f64, frames: usize, out: &mut Vec<(u32, Event)>) -> Option<u32> {
-        let end = self.frame + frames as u64;
+    /// played: the frame in this block that event fell on. The first
+    /// `heard` of `out` are the player's events this block, for practice.
+    fn block(
+        &mut self,
+        rate: f64,
+        frames: usize,
+        (practice, heard): (&crate::practice::Practice, usize),
+        out: &mut Vec<(u32, Event)>,
+    ) -> Option<u32> {
+        // Practice: the clock stands still for the frames the song waits for
+        // the player, and stops at the next notes they have not played.
+        let input = out.get(..heard).unwrap_or_default();
+        let song = &mut *self.song;
+        let (idle, end) = (song.gate).clock(practice, input, self.frame, frames as u64, rate);
         let mut last = 0;
         while let Some(&(time, message)) = self.song.events.get(self.next) {
             let at = (time * rate).round() as u64;
             if at >= end || out.len() == out.capacity() {
                 break;
             }
-            last = u32::try_from(at.saturating_sub(self.frame)).unwrap_or(0);
-            out.push((last, event(message)));
-            self.hold(message);
+            last = u32::try_from(at.saturating_sub(self.frame) + idle).unwrap_or(0);
+            let voice = self.song.voices.get(self.next).copied().unwrap_or(u8::MAX);
+            // The player's own notes are theirs to play.
+            if self.song.gate.plays(voice, message) {
+                out.push((last, event(message)));
+                self.hold(message);
+            }
             self.next += 1;
         }
         self.frame = end;
@@ -426,6 +465,10 @@ pub struct Songs {
     shown: AtomicU32,
     /// Whether `KONTRA_PLAY` has been read ([`Songs::autoplay`]).
     autoplayed: AtomicBool,
+    /// Practice mode: the hands chosen and what it shows ([`crate::practice`]).
+    pub practice: crate::practice::Practice,
+    /// The file the last song came from, to export.
+    path: Mutex<Option<PathBuf>>,
 }
 
 impl Default for Songs {
@@ -443,6 +486,8 @@ impl Default for Songs {
             folder: Mutex::new(None),
             shown: AtomicU32::new(u32::MAX),
             autoplayed: AtomicBool::new(false),
+            practice: crate::practice::Practice::default(),
+            path: Mutex::new(None),
         }
     }
 }
@@ -452,13 +497,21 @@ impl Songs {
     pub fn open(&self, path: &Path) -> Result<(), String> {
         let song = Song::open(path)?;
         *lock(&self.folder) = path.parent().map(Path::to_path_buf);
+        *lock(&self.path) = Some(path.to_path_buf());
         self.play(song);
         Ok(())
+    }
+
+    /// The file the last song played came from.
+    pub fn path(&self) -> Option<PathBuf> {
+        lock(&self.path).clone()
     }
 
     /// Plays `song`, replacing what plays.
     pub fn play(&self, mut song: Song) {
         *lock(&self.title) = Some((song.name.clone(), song.length));
+        // Practice keeps the notes it waits for; built here, off audio.
+        song.gate = crate::practice::Gate::new(&song.notes);
         // The audio thread has no use for them.
         *lock(&self.notes) = std::mem::take(&mut song.notes);
         self.stamp(0, 0, 1.0);
@@ -562,6 +615,8 @@ impl Songs {
         frames: usize,
         out: &mut Vec<(u32, Event)>,
     ) -> bool {
+        // What `out` holds so far is the player's: practice listens to it.
+        let heard = out.len();
         let mut added = false;
         while let Some(command) = self.commands.pop() {
             if let Some(mut old) = now.take() {
@@ -578,10 +633,11 @@ impl Songs {
             }
         }
         let Some(playing) = now.as_mut() else {
+            self.practice.clear();
             return added;
         };
         let start = playing.frame;
-        let ended = playing.block(rate, frames, out);
+        let ended = playing.block(rate, frames, (&self.practice, heard), out);
         self.stamp(start, playing.frame, rate);
         // After its last event, at that event's frame, whatever the block.
         if let Some(at) = ended {

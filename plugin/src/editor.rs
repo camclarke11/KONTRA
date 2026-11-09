@@ -621,6 +621,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
         app.song = song(&p.shared.song, &mut clock);
+        crate::studio::fill(&p.shared, &mut app);
         let response = kontra_ui::app::view(ui, &mut app);
         let moving = clock.moving(Instant::now());
         following.store(app.follows_song() && moving, Ordering::Relaxed);
@@ -654,6 +655,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 p.shared.folder.ask(from);
                 continue;
             }
+            // Record, Practice and Export ([`crate::studio`]).
+            if crate::studio::act(&p.shared, &action) {
+                continue;
+            }
             match action {
                 Action::PlaySong => {
                     p.shared.song.dialog.ask(p.shared.song.folder());
@@ -668,6 +673,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 _ => {}
             }
             if let Some(event) = played(&action) {
+                crate::studio::played(&p.shared, &event);
                 if let Some(player) = lock(&p.shared.player).as_ref() {
                     player.play(event);
                 }
@@ -749,6 +755,8 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         watched.shared.dirty.swap(false, Ordering::AcqRel)
             | kontra_ui::pictures::arrived()
             | follow.load(Ordering::Relaxed)
+            // Practice marks a key struck or a wrong one, song moving or not.
+            | watched.shared.song.practice.changed()
     })
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))

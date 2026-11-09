@@ -10,13 +10,17 @@
 
 mod align;
 mod editor;
+mod export;
 mod folder;
 mod input;
 mod look;
 #[cfg(test)]
 mod playtest;
+mod practice;
 mod readout;
+mod record;
 mod song;
+mod studio;
 #[cfg(test)]
 mod tests;
 
@@ -104,6 +108,10 @@ pub struct Shared {
     folder: folder::Dialog,
     /// A MIDI file playing into the rack, and its picker.
     song: song::Songs,
+    /// Recording what the player plays ([`record`]).
+    record: record::Recorder,
+    /// Exporting the song to audio or video ([`export`]).
+    export: export::Exports,
 }
 
 /// What the host or the editor asks of the rack, carried out by [`Tick`].
@@ -121,6 +129,8 @@ pub enum Request {
     AddRoot(std::path::PathBuf),
     /// A MIDI file the player dropped, to play.
     Song(std::path::PathBuf),
+    /// Export the song played last ([`export`]).
+    Export(export::Kind),
 }
 
 impl Shared {
@@ -226,6 +236,8 @@ pub struct Dsp {
     latency: u32,
     /// The MIDI file playing, if any ([`song`]).
     song: Option<song::Playing>,
+    /// A take being recorded ([`record`]).
+    record: record::Capture,
 }
 
 /// The control tick: carries out requests, frees what audio retired and
@@ -274,6 +286,7 @@ impl BackgroundTask for Tick {
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
                 Request::AddRoot(path) => browser.add_root(path),
                 Request::Song(path) => play_song(p, &path, &mut report),
+                Request::Export(kind) => export(p, rack, kind, &mut report),
             }
             if loads {
                 p.shared.done.fetch_add(1, Ordering::AcqRel);
@@ -290,6 +303,8 @@ impl BackgroundTask for Tick {
             play_song(p, &path, &mut report);
         }
         let song_moved = p.shared.song.tick();
+        // Recording and exporting: a take saved, an export finished.
+        let studio_moved = studio(p, &mut report);
         let latency = align::update(p.align.value(), rack);
         p.shared.latency.store(latency, Ordering::Relaxed);
         rack.tick();
@@ -299,7 +314,8 @@ impl BackgroundTask for Tick {
         }
         // What the requests did shows, whether or not the editor's copy
         // of the rack noticed (a script's answer to a click).
-        if lock(&p.shared.view).refresh(rack, browser, report) | changed | song_moved {
+        if lock(&p.shared.view).refresh(rack, browser, report) | changed | song_moved | studio_moved
+        {
             p.shared
                 .dirty
                 .store(true, std::sync::atomic::Ordering::Release);
@@ -312,6 +328,42 @@ fn play_song(p: &KontraParams, path: &std::path::Path, report: &mut Vec<String>)
     if let Err(e) = p.shared.song.open(path) {
         report.push(format!("{}: {e}", path.display()));
     }
+}
+
+/// Starts exporting the song played last, through the rack as it is now.
+fn export(p: &KontraParams, rack: &Rack, kind: export::Kind, report: &mut Vec<String>) {
+    let Some(song) = p.shared.song.path() else {
+        report.push("Export: play a MIDI file first, then export it".into());
+        return;
+    };
+    p.shared.export.start(export::Order {
+        kind,
+        song,
+        saved: rack.save(),
+        mix: export::audio::Mix {
+            gain: db_to_linear(p.volume.value()),
+            align: p.align.value(),
+        },
+        folder: p.shared.record.folder(),
+    });
+}
+
+/// On the tick: a take that stopped is saved, an export that finished is
+/// taken, a recordings folder picked is kept. Whether the editor should
+/// draw what moved.
+fn studio(p: &KontraParams, report: &mut Vec<String>) -> bool {
+    if let Some(folder) = p.shared.record.dialog.picked() {
+        p.shared.record.set_folder(folder);
+    }
+    let (take, recorded) = p.shared.record.tick();
+    if let Some(Err(e)) = take {
+        report.push(format!("Recording: {e}"));
+    }
+    let (exported, exporting) = p.shared.export.tick();
+    if let Some(Err(e)) = exported.filter(|r| r.as_ref().is_err_and(|e| e != "cancelled")) {
+        report.push(format!("Export: {e}"));
+    }
+    recorded | exporting
 }
 
 /// A host state is waiting to load: what `saved` holds is that state.
@@ -435,6 +487,8 @@ impl PluginLogic for Kontra {
                 s.input.push((e.sample_offset, event));
             }
         }
+        // What the player played, for a take (not a song's notes).
+        (p.shared.record).process(&mut s.record, s.rate, frames, &s.input);
         // A MIDI file the editor plays, alongside the host's events.
         if p.shared
             .song
@@ -477,6 +531,10 @@ impl PluginLogic for Kontra {
             }
         }
         s.gain = target;
+        // A take's count-in clicks, on the first pair.
+        for ch in 0..b.num_output_channels().min(2) {
+            s.record.click(b.output(ch));
+        }
         ProcessStatus::Normal
     }
 
