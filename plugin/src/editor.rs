@@ -758,14 +758,7 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 dropping.shared.request(Request::Song(path.clone()));
             }
             for path in &folders {
-                // A folder of MIDI files is one of songs, for the Songs tab.
-                dropping
-                    .shared
-                    .request(if crate::songbook::holds_songs(path) {
-                        Request::Songbook(app::SongAction::AddFolder(Some(path.clone())))
-                    } else {
-                        Request::AddRoot(path.clone())
-                    });
+                dropping.shared.request(Request::AddRoot(path.clone()));
             }
             for path in &instruments {
                 dropping.shared.request(Request::Load {

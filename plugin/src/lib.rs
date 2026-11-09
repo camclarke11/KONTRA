@@ -120,7 +120,8 @@ pub enum Request {
     Ui(editor::Edit),
     /// The browser's own actions: load a preset, star, rescan.
     Browse(kontra_ui::app::Action),
-    /// A folder the player dropped, to scan for libraries.
+    /// A folder the player dropped: one of MIDI files goes to the Songs
+    /// tab ([`songbook::holds_songs`]), any other is scanned for libraries.
     AddRoot(std::path::PathBuf),
     /// A MIDI file the player dropped, to play.
     Song(std::path::PathBuf),
@@ -279,6 +280,8 @@ impl BackgroundTask for Tick {
                 }
                 Request::Ui(edit) => editor::apply(rack, edit),
                 Request::Browse(action) => editor::browse(rack, browser, action, &mut report),
+                // A folder of MIDI files is one of songs, for the Songs tab.
+                Request::AddRoot(path) if songbook::holds_songs(&path) => book.add_folder(path),
                 Request::AddRoot(path) => browser.add_root(path),
                 Request::Song(path) => play_song(p, book, &path, &mut report),
                 Request::Songbook(action) => {

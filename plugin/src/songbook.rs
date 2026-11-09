@@ -383,9 +383,22 @@ fn scan(folders: &[PathBuf], loose: &[PathBuf], seen: &Seen) -> (Vec<Found>, See
                 }
             }
         }
+        // The folder's own songs first, then each folder inside it.
         let key = |p: &PathBuf| {
             let inside = p.strip_prefix(folder).unwrap_or(p);
-            kontra_library::natural(&inside.to_string_lossy())
+            let dir = inside
+                .parent()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let name = inside
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (
+                !dir.is_empty(),
+                kontra_library::natural(&dir),
+                kontra_library::natural(&name),
+            )
         };
         here.sort_by_cached_key(key);
         for path in here {
@@ -466,6 +479,8 @@ mod tests {
         let s = Scratch::new("folders");
         let songs = s.0.join("Songs");
         std::fs::create_dir_all(songs.join("Etudes")).unwrap();
+        std::fs::create_dir_all(songs.join("0 First")).unwrap();
+        std::fs::write(songs.join("0 First").join("z.mid"), song()).unwrap();
         std::fs::create_dir_all(songs.join(".hidden")).unwrap();
         std::fs::write(songs.join("b 10.mid"), song()).unwrap();
         std::fs::write(songs.join("b 9.MID"), song()).unwrap();
@@ -486,8 +501,14 @@ mod tests {
             .collect();
         assert_eq!(
             listed,
-            [("", "b 9"), ("", "b 10"), ("", "broken"), ("Etudes", "a")],
-            "naturally ordered, hidden folders skipped"
+            [
+                ("", "b 9"),
+                ("", "b 10"),
+                ("", "broken"),
+                ("0 First", "z"),
+                ("Etudes", "a")
+            ],
+            "its own songs, then its folders', naturally; hidden folders skipped"
         );
         let b9 = &v.songs[0];
         assert!((b9.length - 3.0).abs() < 1e-9 && b9.tracks == 1);

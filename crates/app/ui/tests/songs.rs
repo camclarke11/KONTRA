@@ -157,6 +157,10 @@ fn the_songs_tab_lists_folders_and_a_click_plays() {
         click(&mut ui, &mut app, "song-folder-remove-0"),
         [Action::Song(SongAction::RemoveFolder("/songs".into()))]
     );
+    // Folded, the folder hides everything in it.
+    click(&mut ui, &mut app, "song-folder-0-KONTRA test pieces");
+    assert!(!shown(&ui, "song-0") && !shown(&ui, "song-folder-0-KONTRA test pieces / Etudes"));
+    assert!(shown(&ui, "song-folder-remove-0"));
     // Back to libraries, and back again: no second read unasked.
     click(&mut ui, &mut app, "format-Kontakt");
     assert!(!shown(&ui, "song-0"));
@@ -259,7 +263,10 @@ fn the_touch_ups_switch_and_say_what_they_did_to_the_song_playing() {
         text(&ui, "song-touched").as_deref(),
         Some("auto-pedal · humanised")
     );
-    assert!(shown(&ui, "touch-pedal-row"));
+    assert_eq!(
+        text(&ui, "touch-status").as_deref(),
+        Some("This song got auto-pedal, humanise")
+    );
     // Another song, not read by the tab: its keys alone, which let go.
     app.song.as_mut().unwrap().name = "other.mid".into();
     settle(&mut ui, &mut app);

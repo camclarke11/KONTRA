@@ -225,12 +225,13 @@ pub(super) fn view(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         row![search.el.grow(1).min_w(0), add.el, hide.el]
             .gap(TIGHT)
             .align(Align::Center)
-            .pad(kit::edges(SPACE, SPACE, 0., SPACE)),
-        tabs,
+            .pad(kit::edges(SPACE, SPACE, 0., SPACE))
+            .shrink(0),
+        tabs.shrink(0),
         rule(),
-        shelves,
+        shelves.shrink(0),
         rule(),
-        list.grow(1).min_h(0),
+        list.grow(1).min_h(CONTROL * 3.),
         rule(),
         touch,
     ]
@@ -320,38 +321,30 @@ fn list(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
         }
     } else {
         for (f, folder) in book.folders.iter().enumerate() {
-            let mut start = true;
-            let mut heading = String::new();
-            for (n, song) in book
-                .songs
-                .iter()
-                .enumerate()
+            let inside: Vec<(usize, &SongFile)> = (book.songs.iter().enumerate())
                 .filter(|(_, s)| s.folder == Some(f))
-            {
-                let here = if song.dir.is_empty() {
-                    folder.name.clone()
-                } else {
-                    format!("{} / {}", folder.name, song.dir)
-                };
-                if start || here != heading {
-                    let count = (book.songs.iter())
-                        .filter(|s| s.folder == Some(f) && s.dir == song.dir)
-                        .count();
-                    let (el, folded, removed) = folder_row(ui, f, &here, start, count, v);
+                .collect();
+            // The folder first, counting all it holds; folded, it hides all.
+            let (el, folded, removed) = folder_row(ui, f, &folder.name, true, inside.len(), v);
+            fold = fold.or(folded);
+            remove = remove.or(removed.then(|| folder.path.clone()));
+            rows.push(el);
+            if v.folded.contains(&folder.name) {
+                continue;
+            }
+            let mut heading: Option<&str> = None;
+            for &(n, song) in &inside {
+                let sub = format!("{} / {}", folder.name, song.dir);
+                if !song.dir.is_empty() && heading != Some(song.dir.as_str()) {
+                    heading = Some(song.dir.as_str());
+                    let count = inside.iter().filter(|(_, s)| s.dir == song.dir).count();
+                    let (el, folded, _) = folder_row(ui, f, &sub, false, count, v);
                     fold = fold.or(folded);
-                    remove = remove.or(removed.then(|| folder.path.clone()));
                     rows.push(el);
-                    heading = here;
-                    start = false;
                 }
-                if !v.folded.contains(&heading) {
+                if song.dir.is_empty() || !v.folded.contains(&sub) {
                     row_of(ui, n, song, &mut rows);
                 }
-            }
-            if start {
-                let (el, _, removed) = folder_row(ui, f, &folder.name, true, 0, v);
-                remove = remove.or(removed.then(|| folder.path.clone()));
-                rows.push(el);
             }
         }
     }
@@ -552,111 +545,105 @@ fn song_row(
     (line, star.changed)
 }
 
-/// The touch-ups: a switch each, and what it did to the song playing.
+/// The touch-ups: a switch each, two to a row, and a line on what they
+/// did to the song playing (or what each is for, in its tooltip).
 fn touch_ups(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     let book = &app.songbook;
     let playing =
         (app.song.as_ref()).and_then(|s| book.playing.as_ref().filter(|p| p.name == s.name));
     let mut touch = book.touch;
-    let mut rows = vec![
-        row![section("Touch-ups"), spacer()]
-            .align(Align::Center)
-            .pad(kit::edges(TIGHT, SPACE, 0., SPACE)),
-    ];
+    let status = match playing {
+        None => "Each applies as a song is read, only where it needs it".to_owned(),
+        Some(p) => status(p),
+    };
     type Pick = fn(&mut Touch) -> &mut bool;
-    let switches: [(&str, &str, &str, Pick, [&str; 4]); 4] = [
+    let switches: [(&str, &str, &str, Pick); 4] = [
         (
             "touch-pedal",
             "Auto-pedal",
-            "A sustain pedal for files that never press one: down after each new harmony, lifted in rests",
+            "For files that never press the sustain pedal: down after each new harmony, lifted at the next and in rests",
             |t| &mut t.pedal,
-            [
-                "For files with no pedal",
-                "Pedalling this song",
-                "This song has no pedal",
-                "This song pedals itself",
-            ],
         ),
         (
             "touch-humanise",
             "Humanise",
-            "For files quantised to a grid: chords spread over a few milliseconds, velocities varied",
+            "For files quantised to a grid: each chord's notes spread over a few milliseconds after its top note, velocities varied",
             |t| &mut t.humanise,
-            [
-                "For quantised files",
-                "Humanising this song",
-                "This song is quantised",
-                "This song is played by hand",
-            ],
         ),
         (
             "touch-roll",
             "Roll chords",
             "With Humanise: chords of four notes or more rolled from the bottom up, slightly",
             |t| &mut t.roll,
-            [
-                "Big chords, with Humanise",
-                "Rolling this song's big chords",
-                "This song's chords are not rolled",
-                "This song is played by hand",
-            ],
         ),
         (
             "touch-velocity",
             "Velocity curve",
             "For files whose notes share one velocity: louder on the beat and up the line, the melody over the rest",
             |t| &mut t.velocity,
-            [
-                "For files at one velocity",
-                "Shaping this song's velocities",
-                "This song is at one velocity",
-                "This song's velocities vary",
-            ],
         ),
     ];
     let mut changed = false;
-    for (id, label, tip, pick, [idle, done, could, none]) in switches {
+    let mut cells = Vec::new();
+    for (id, label, tip, pick) in switches {
         let on = *pick(&mut touch);
         let r = latch(ui, id, label, tip, on);
-        let r = Response {
-            el: r.el.w(TEXT * 7.5),
-            ..r
-        };
         if r.changed {
             *pick(&mut touch) = !on;
             changed = true;
         }
-        let status = match playing {
-            None => idle,
-            Some(p) => {
-                let (mut needs, mut applied) = (p.needs, p.applied);
-                // Rolled chords need what the hand needs.
-                needs.roll = needs.humanise;
-                match (*pick(&mut needs), *pick(&mut applied)) {
-                    (_, true) => done,
-                    (true, false) => could,
-                    (false, false) => none,
-                }
-            }
-        };
-        rows.push(
-            row![
-                r.el,
-                caption(status).fill(secondary()).lines(1).min_w(0).grow(1)
-            ]
-            .gap(SPACE)
-            .align(Align::Center)
-            .pad((0., SPACE))
-            .id(format!("{id}-row")),
-        );
+        cells.push(r.el.grow(1).w(0.));
     }
     if changed {
         app.songbook.touch = touch;
         out.push(Action::Song(SongAction::Touch(touch)));
     }
-    col(rows)
-        .gap(TIGHT)
-        .pad(kit::edges(0., 0., SPACE, 0.))
-        .shrink(0)
-        .id("touch-ups")
+    let mut grid = Vec::new();
+    let mut cells = cells.into_iter();
+    while let (Some(a), b) = (cells.next(), cells.next()) {
+        grid.push(row(std::iter::once(a).chain(b).collect::<Vec<_>>()).gap(TIGHT));
+    }
+    col![
+        row![section("Touch-ups"), spacer()],
+        col(grid).gap(TIGHT),
+        row![
+            caption(status.clone())
+                .fill(secondary())
+                .lines(1)
+                .min_w(0)
+                .tip(status)
+                .id("touch-status"),
+            spacer()
+        ],
+    ]
+    .gap(TIGHT)
+    .pad(kit::edges(TIGHT, SPACE, SPACE, SPACE))
+    .shrink(0)
+    .id("touch-ups")
+}
+
+/// What the touch-ups did to the song `p`: those it got, else those it
+/// would get were they on, else that it needs none.
+fn status(p: &Played) -> String {
+    let names = |t: Touch| -> Vec<&str> {
+        [
+            (t.pedal, "auto-pedal"),
+            (t.humanise, "humanise"),
+            (t.roll && t.humanise, "rolled chords"),
+            (t.velocity, "velocity curve"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect()
+    };
+    let got = names(p.applied);
+    if !got.is_empty() {
+        return format!("This song got {}", got.join(", "));
+    }
+    let could = names(p.needs);
+    if could.is_empty() {
+        "This song is played by hand: it needs none".into()
+    } else {
+        format!("Off for this song: {}", could.join(", "))
+    }
 }

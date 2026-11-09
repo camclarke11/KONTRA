@@ -157,10 +157,12 @@ Panels, keyboard keys, and search fields are square. Action controls use only a 
 ### Library Browser
 - **Style:** library cards show local artwork and a wrapped name/count row; the independent instrument list uses compact text rows.
 - **Artwork:** discover local `wallpaper.png` or embedded PNGs in NICNT/NKR files at runtime and contain them at their source aspect ratio. No artwork is bundled; review screenshots are not product assets.
+- **Songs:** a third tab beside Kontakt and Falcon / UVI lists the player's folders of MIDI files (added with + or by dropping a folder of them), each folder's own songs first and then its subfolders, every row a name with its length and tracks and a star; Favorites and Recent narrow it, the search matches names and subfolders, and a click plays the song. The song playing carries the accent edge. Under the list, the touch-ups (Auto-pedal, Humanise, Roll chords, Velocity curve) are latches two to a row with one line saying what they did to the song playing; each applies only to a file that lacks what it adds, so a recorded performance plays as written.
 
 ### Keyboard
 - **Style:** a stable four-octave bed uses near-white naturals and near-black sharps, with octave controls and a restrained range label.
 - **Behavior:** mouse press and release produce note-on and note-off events. Highlights show held mouse/computer/host keys and clear on key-up, independently of sustain, script-generated notes and audio release tails. Authored colours tint light naturals and dark sharps rather than replacing the piano faces with solid colour.
+- **Chord name:** while a song plays, the keyboard bar names the chord sounding (from the notes held or rung by the pedal, passing tones ignored; inversions and slash chords after a slash) and, dimmed beside it, the touch-ups the song got.
 - **Playing a MIDI file:** its notes fall onto the keys in a dark field lane exactly as wide as the keybed, three seconds of the song tall, each bar on its key with softly rounded ends (at most 4 px); the keybed shows the song's keys centred in whole octaves (seven at least, so keys keep their size) and lights each sounding key in its note's colour. Colours are per voice (a track and channel), blue first, from hues that skip amber and coral; a louder note is lighter, a sharp's bar darker. "Notes" in the keyboard bar hides the lane and gives the keybed back its chosen octaves. Frames are drawn only while the song moves.
 
 ### Compatibility Status
