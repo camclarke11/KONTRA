@@ -451,7 +451,10 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
         let el = stage::view(ui, app, &mut out);
         return Response { el, changed: out };
     }
-    app.view.stage.open = false;
+    // Closed because the song went: the screen it filled goes back too.
+    if std::mem::take(&mut app.view.stage.open) && std::mem::take(&mut app.view.stage.full) {
+        out.push(Action::Song(stage::Command::FullScreen(false)));
+    }
     let header = header(ui, app, &mut out);
     let width = ui.tween(
         "browser-width",

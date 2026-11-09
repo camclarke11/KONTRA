@@ -136,8 +136,11 @@ enum Division {
     Smpte(f64),
 }
 
+/// Items at their tick, with their track.
+type Items = Vec<(usize, u16, Item)>;
+
 /// Every meta event and the tick of every other, by track, in tick order.
-fn items(bytes: &[u8]) -> Option<(Division, Vec<(usize, u16, Item)>)> {
+fn items(bytes: &[u8]) -> Option<(Division, Items)> {
     if bytes.get(..4) != Some(b"MThd".as_slice()) {
         return None;
     }
@@ -270,7 +273,7 @@ fn beats(division: Division, items: &[(usize, u16, Item)], last: usize) -> Vec<B
             }
             out.push(Beat {
                 time: clock.at(tick),
-                downbeat: beat % u32::from(num) == 0,
+                downbeat: beat.is_multiple_of(u32::from(num)),
             });
             beat += 1;
         }

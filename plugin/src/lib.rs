@@ -17,6 +17,7 @@ mod look;
 mod playtest;
 mod readout;
 mod song;
+mod stage;
 #[cfg(test)]
 mod tests;
 

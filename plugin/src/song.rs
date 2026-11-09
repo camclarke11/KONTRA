@@ -28,7 +28,7 @@ use crate::lock;
 mod meta;
 mod transport;
 
-pub use transport::{Now, Playing, Settings, Transport};
+pub use transport::{Playing, SLOWEST, SPLIT, Transport};
 
 /// The port a song's notes come from: not the host's, not the editor's.
 const PORT: u8 = 254;
@@ -467,6 +467,8 @@ impl Songs {
     }
 
     /// While a song plays: its name, where it is and its length, in seconds.
+    /// The editor reads [`Songs::now`], which also has a song that waits.
+    #[allow(dead_code, reason = "the song's plain status, for any caller")]
     pub fn status(&self) -> Option<(String, f64, f64)> {
         if !self.playing.load(Ordering::Acquire) {
             return None;
@@ -598,7 +600,7 @@ pub(crate) mod tests {
     }
 
     /// A track from (tick, bytes) in order, closed with end of track.
-    pub(super) fn track(events: &[(usize, &[u8])]) -> Vec<u8> {
+    pub(crate) fn track(events: &[(usize, &[u8])]) -> Vec<u8> {
         let mut body = Vec::new();
         let mut last = 0;
         for &(tick, bytes) in events {
@@ -610,7 +612,7 @@ pub(crate) mod tests {
         chunk(b"MTrk", &body)
     }
 
-    pub(super) fn file(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
+    pub(crate) fn file(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
         let mut header = Vec::new();
         header.extend(format.to_be_bytes());
         header.extend((tracks.len() as u16).to_be_bytes());

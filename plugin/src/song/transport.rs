@@ -345,7 +345,7 @@ impl Head {
                 f64::from_bits(self.speed.load(Ordering::Relaxed)),
             );
             fence(Ordering::Acquire);
-            if before % 2 == 0 && self.seq.load(Ordering::Relaxed) == before {
+            if before.is_multiple_of(2) && self.seq.load(Ordering::Relaxed) == before {
                 break;
             }
         }
@@ -573,6 +573,7 @@ impl Playing {
     }
 
     /// Whether it played to its end and waits there.
+    #[cfg(test)]
     #[must_use]
     pub fn ended(&self) -> bool {
         self.ended
@@ -957,7 +958,9 @@ impl Songs {
         let position = if ended {
             length
         } else {
-            t.head.at(Instant::now()).min(length)
+            self.position_at(Instant::now())
+                .unwrap_or_else(|| t.head.at(Instant::now()))
+                .min(length)
         };
         Some(Now {
             name,

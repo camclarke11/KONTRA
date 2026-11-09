@@ -33,6 +33,10 @@ Retained KONTRA behavior:
 
 - Five list rows per wheel notch, with acceleration across a fling.
 - Pointer hide and restore during knob drags, and diagonal resize cursor.
+- A `ScreenHook` the window asks each tick whether to fill the screen; on
+  macOS it reads and toggles the holding `NSWindow`'s own full screen
+  (`styleMask`, `toggleFullScreen:`), and reports none where the window
+  forbids it (`NSWindowCollectionBehaviorFullScreenNone`).
 - Bounded native drag timing capture for the diagnostics report.
 - GPU initialization, uncaptured-error and panic diagnostics, with Windows
   backend selection that avoids implicitly initializing Vulkan in DAW hosts.

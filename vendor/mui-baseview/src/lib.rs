@@ -90,6 +90,12 @@ pub type PointerHook = Arc<Mutex<dyn FnMut(&mui::Ui) -> bool + Send>>;
 /// Host retains its callback; the window forwards errors on its next tick.
 pub type LogHook = Arc<Mutex<dyn FnMut(&str) + Send>>;
 
+/// KONTAKTO patch: asked every tick with whether the window fills the
+/// screen (`None` where it cannot: not macOS, or a host window that does
+/// not go full screen); `Some(on)` asks it to fill the screen or give it
+/// back. On macOS this is `NSWindow`'s own full screen, the green button's.
+pub type ScreenHook = Arc<Mutex<dyn FnMut(Option<bool>) -> Option<bool> + Send>>;
+
 /// An app's look at every key event, down and up, before MUI routes it:
 /// `true` takes the key, and neither MUI nor the host sees it. MUI hands a
 /// view key presses only; a computer keyboard that plays notes has to hear
@@ -111,6 +117,8 @@ pub struct Requests {
     keys: Mutex<Option<KeyHook>>,
     /// KONTAKTO patch: see [`PointerHook`].
     pointer: Mutex<Option<PointerHook>>,
+    /// KONTAKTO patch: see [`ScreenHook`].
+    screen: Mutex<Option<ScreenHook>>,
     /// KONTAKTO patch: one bounded native capture, configured before open.
     timing: Mutex<Option<NativeTimingHook>>,
     log: Mutex<Option<LogHook>>,
@@ -185,6 +193,13 @@ impl Requests {
     pub fn on_key(&self, hook: KeyHook) {
         *self
             .keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
+    }
+    /// KONTAKTO patch: let `hook` fill the screen; see [`ScreenHook`].
+    pub fn on_screen(&self, hook: ScreenHook) {
+        *self
+            .screen
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hook);
     }
@@ -595,6 +610,24 @@ impl<V: View> Handler<V> {
             }
             return;
         };
+        // KONTAKTO patch: the app may ask for the whole screen.
+        let screen = self
+            .requests
+            .screen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = screen {
+            let now = platform::full_screen(handle);
+            let want = hook
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)(now);
+            if let (Some(now), Some(want)) = (now, want)
+                && now != want
+            {
+                platform::toggle_full_screen(handle);
+            }
+        }
         if platform::should_skip_frame(handle) {
             if let Some(s) = sample {
                 s.outcome = NativeFrameOutcome::Hidden;
