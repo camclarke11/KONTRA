@@ -14,7 +14,6 @@ use kontra_host::state::SavedView;
 use kontra_host::ui::Library;
 use kontra_protocol::Stats;
 use kontra_ui::app::{self, Action, App, Face, Part};
-use kontra_ui::waterfall::Clock;
 use kontra_ui::{Pictures, layout};
 use kontra_ui_model::Interface;
 use moose::mui::MuiEditor;
@@ -599,7 +598,11 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
     // Where the last load the editor asked for lands.
     let mut target = app::Loading::New;
     let mut buttons = None;
-    let mut clock = Clock::default();
+    // The song's transport and the Stage ([`crate::stage`]).
+    let mut player = crate::stage::Player::default();
+    let keys = Arc::new(crate::stage::Keys::default());
+    let screen = Arc::new(crate::stage::Screen::default());
+    let (keyed, keying, screened) = (Arc::clone(&keys), Arc::clone(&keys), Arc::clone(&screen));
     // While the keyboard follows a song, every display refresh draws.
     let following = Arc::new(AtomicBool::new(false));
     let follow = Arc::clone(&following);
@@ -620,18 +623,33 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         crate::look::parts(&mut app, &slots, &mut waiting);
         app.master = f64::from(p.volume.value());
         app.loading = p.shared.loading().then_some(target);
-        app.song = song(&p.shared.song, &mut clock);
+        app.song = player.song(&p.shared.song, screen.full());
+        // Space, F and Escape, which the window handed over.
+        let mut changed = Vec::new();
+        for key in keys.take() {
+            kontra_ui::stage::shortcut(&mut app, key, &mut changed);
+        }
+        if let Some(full) = player.autostage(app.song.is_some()) {
+            kontra_ui::stage::shortcut(&mut app, kontra_ui::stage::Shortcut::Stage, &mut changed);
+            if full {
+                app.view.stage.full = true;
+                screen.ask(true);
+            }
+        }
         let response = kontra_ui::app::view(ui, &mut app);
-        let moving = clock.moving(Instant::now());
+        changed.extend(response.changed);
+        keys.loaded.store(app.song.is_some(), Ordering::Release);
+        keys.stage.store(app.view.stage.open, Ordering::Release);
+        let moving = player.moving(Instant::now());
         following.store(app.follows_song() && moving, Ordering::Relaxed);
         // A frame reads its input as it builds, so what a press or release
         // changes (a switch applied to the face, a row selected) shows in
         // the frame after it: ask for that one, or it waits for more input.
         let held = ui.pointer().buttons;
-        if buttons.replace(held) != Some(held) || !response.changed.is_empty() {
+        if buttons.replace(held) != Some(held) || !changed.is_empty() {
             p.shared.dirty.store(true, Ordering::Release);
         }
-        for action in response.changed {
+        for action in changed {
             let asked = match action {
                 Action::Load { .. } => Some(app::Loading::New),
                 Action::Replace { part, .. }
@@ -661,6 +679,10 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
                 }
                 Action::StopSong => {
                     p.shared.song.stop();
+                    continue;
+                }
+                Action::Song(command) => {
+                    player.apply(&p.shared.song, command, &screen);
                     continue;
                 }
                 // Panic stops a song too, then ends every note as before.
@@ -749,25 +771,16 @@ pub fn editor(params: Arc<KontraParams>) -> Box<dyn Editor> {
         watched.shared.dirty.swap(false, Ordering::AcqRel)
             | kontra_ui::pictures::arrived()
             | follow.load(Ordering::Relaxed)
+            | keying.waiting()
     })
+    // Space, F and Escape for the transport and the Stage, before MUI and
+    // the host see them; the rest go on as before.
+    .on_key(move |ui, key| keyed.key(ui.focus_is_text(), key))
+    // The Stage may fill the screen (macOS full screen).
+    .full_screen(move |now| screened.tick(now))
     // Add folder's picker is owned by the host's window (Windows).
     .on_win32_parent(move |hwnd| owner.shared.folder.set_owner(hwnd))
     .into_editor()
-}
-
-/// The song playing, as the editor shows it: where the audio thread says
-/// it is, moved on smoothly by `clock` between its blocks.
-fn song(songs: &crate::song::Songs, clock: &mut Clock) -> Option<app::Song> {
-    let Some((name, position, length)) = songs.status() else {
-        *clock = Clock::default();
-        return None;
-    };
-    Some(app::Song {
-        name,
-        position: clock.at(position, Instant::now()).min(length),
-        length,
-        notes: songs.notes(),
-    })
 }
 
 /// The port the editor's notes come from: no host port, so a host note-off

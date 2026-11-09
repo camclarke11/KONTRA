@@ -133,6 +133,9 @@ pub struct MuiEditor<P: Params> {
     keys: Option<window::KeyHook>,
     /// [`MuiEditor::hide_pointer`], handed to each window it opens.
     pointer: Option<window::PointerHook>,
+    /// KONTRA patch: [`MuiEditor::full_screen`], handed to each window it
+    /// opens; with one, a standalone window may fill the screen.
+    screen: Option<window::ScreenHook>,
     timing: Option<window::NativeTimingHook>,
     /// [`MuiEditor::on_win32_parent`].
     win32_parent: Option<Box<dyn FnMut(Option<isize>) + Send>>,
@@ -200,6 +203,7 @@ impl<P: Params> MuiEditor<P> {
             window: None,
             keys: None,
             pointer: None,
+            screen: None,
             timing: None,
             win32_parent: None,
             #[cfg(target_os = "linux")]
@@ -312,6 +316,19 @@ impl<P: Params> MuiEditor<P> {
         })))
     }
 
+    /// KONTRA patch: let the window fill the screen. `f` is asked every
+    /// display tick with whether it does (`None` where it cannot) and says
+    /// whether it should. A standalone keeps its window's maximize and full
+    /// screen ([`Editor::can_maximize`]) for an editor that sets this.
+    #[must_use]
+    pub fn full_screen(
+        mut self,
+        f: impl FnMut(Option<bool>) -> Option<bool> + Send + 'static,
+    ) -> Self {
+        self.screen = Some(Arc::new(Mutex::new(f)));
+        self
+    }
+
     /// Hide the pointer while `f` says so (a knob being dragged), and put it
     /// back where it hid once `f` stops. Asked every display tick with the
     /// frame's `Ui`, on the window's thread.
@@ -372,6 +389,11 @@ impl<P: Params> Editor for MuiEditor<P> {
         self.min.is_some()
     }
 
+    /// KONTRA patch: an editor that may fill the screen lays out at any size.
+    fn can_maximize(&self) -> bool {
+        self.min.is_some() && self.screen.is_some()
+    }
+
     fn min_size(&self) -> (u32, u32) {
         self.min.unwrap_or(self.size)
     }
@@ -394,6 +416,9 @@ impl<P: Params> Editor for MuiEditor<P> {
         }
         if let Some(keys) = &self.keys {
             self.requests.on_key(Arc::clone(keys));
+        }
+        if let Some(screen) = &self.screen {
+            self.requests.on_screen(Arc::clone(screen));
         }
         if let Some(pointer) = &self.pointer {
             self.requests.on_pointer(Arc::clone(pointer));

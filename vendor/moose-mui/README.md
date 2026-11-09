@@ -15,6 +15,10 @@ moose port of MUI's `mui-truce`; enable it through the facade with
   editor (MUI#48).
 - `window` re-exports KONTRA's `kontra-native-host` through the stable
   `mui_baseview` dependency alias; `mui` is the toolkit itself.
+- KONTRA patch: `MuiEditor::full_screen` hands the window a hook it asks each
+  tick whether to fill the screen (macOS `NSWindow` full screen), and makes
+  `can_maximize` true, so a standalone keeps its green button and full screen
+  for that editor.
 
 ```rust
 use moose::mui::MuiEditor;

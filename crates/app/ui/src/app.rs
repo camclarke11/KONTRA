@@ -23,6 +23,7 @@ use mui::prelude::*;
 use crate::Pictures;
 use crate::keyboard::{self, Keys, note_name};
 use crate::kit::{self, Icon, button, icon_button, rule, section, sheet, strip, tab, vrule};
+use crate::stage;
 use crate::theme::{CONTROL, SIDEBAR, SPACE, TEXT, TIGHT, quick, secondary};
 use crate::waterfall::{self, Notes};
 
@@ -71,7 +72,7 @@ impl App {
     /// refresh while it does, and for none once the song ends.
     #[must_use]
     pub fn follows_song(&self) -> bool {
-        self.song.is_some() && !self.view.keyboard_hidden
+        self.song.is_some() && (!self.view.keyboard_hidden || self.view.stage.open)
     }
 }
 
@@ -86,6 +87,8 @@ pub struct Song {
     pub length: f64,
     /// Its notes, falling onto the keyboard as it plays.
     pub notes: Notes,
+    /// Paused or not, its speed, loop and the rest ([`stage`]).
+    pub transport: stage::Transport,
 }
 
 /// Where a load lands: a new part, or part `n` it replaces.
@@ -316,6 +319,8 @@ pub struct View {
     pub modulation: f64,
     /// Which of [`SCALES`] the editor is drawn at.
     pub scale: usize,
+    /// The Stage: the window given over to a playing song.
+    pub stage: stage::Stage,
     /// Which of [`FACE_SCALES`] a library's own view is drawn at.
     pub face_scale: usize,
     /// How a part that chose none draws its interface.
@@ -416,6 +421,8 @@ pub enum Action {
     PlaySong,
     /// Stop the MIDI file playing.
     StopSong,
+    /// The playing song's transport: pause, seek, speed, loop and the rest.
+    Song(stage::Command),
     Star(usize, bool),
     AddFolder,
     /// New parts take the next free MIDI channel; their own output pair.
@@ -438,6 +445,15 @@ pub fn view(ui: &mut Ui, app: &mut App) -> Response<Vec<Action>> {
     // The window's width as last laid out: what a library's view fits.
     if let Some(s) = ui.scene() {
         app.width = s.layout.size.width;
+    }
+    // The Stage takes the whole window while a song is loaded.
+    if app.view.stage.open && app.song.is_some() {
+        let el = stage::view(ui, app, &mut out);
+        return Response { el, changed: out };
+    }
+    // Closed because the song went: the screen it filled goes back too.
+    if std::mem::take(&mut app.view.stage.open) && std::mem::take(&mut app.view.stage.full) {
+        out.push(Action::Song(stage::Command::FullScreen(false)));
     }
     let header = header(ui, app, &mut out);
     let width = ui.tween(
@@ -516,9 +532,9 @@ fn main(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
     .h(Len::Pct(100.))
 }
 
-/// "Play MIDI"; while a song plays, its name, its clock and "Stop".
-fn song_control(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
-    let Some(song) = &app.song else {
+/// "Play MIDI"; while a song is loaded, its transport ([`stage::compact`]).
+fn song_control(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {
+    if app.song.is_none() {
         let play = button(ui, "song-play", "Play MIDI", false);
         if play.changed {
             out.push(Action::PlaySong);
@@ -526,27 +542,8 @@ fn song_control(ui: &mut Ui, app: &App, out: &mut Vec<Action>) -> El {
         return play
             .el
             .tip("Play a MIDI file into the rack, or drop one on the window");
-    };
-    let stop = button(ui, "song-stop", "Stop", true);
-    if stop.changed {
-        out.push(Action::StopSong);
     }
-    let clock = format!("{} / {}", minutes(song.position), minutes(song.length));
-    row![
-        caption(song.name.clone()).lines(1).min_w(0).w(TEXT * 9.),
-        caption(clock).reserve("00:00 / 00:00"),
-        stop.el.tip("Stop the MIDI file"),
-    ]
-    .gap(TIGHT)
-    .align(Align::Center)
-    .shrink(0)
-    .id("song")
-}
-
-/// `seconds` as minutes and seconds: 2:05.
-fn minutes(seconds: f64) -> String {
-    let s = seconds.max(0.0) as u64;
-    format!("{}:{:02}", s / 60, s % 60)
+    stage::compact(ui, app, out)
 }
 
 fn header(ui: &mut Ui, app: &mut App, out: &mut Vec<Action>) -> El {

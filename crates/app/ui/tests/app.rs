@@ -133,6 +133,7 @@ fn the_header_plays_and_stops_a_midi_file() {
         position: 65.0,
         length: 312.0,
         notes: Notes::default(),
+        ..Default::default()
     });
     settle(&mut ui, &mut app);
     let scene = ui.scene().unwrap();
@@ -166,6 +167,7 @@ fn a_playing_songs_notes_fall_onto_the_keys() {
         position: 1.2,
         length: 4.0,
         notes: Notes::new(vec![note(1.0, 41), note(1.5, 97), note(3.0, 60)]),
+        ..Default::default()
     });
     settle(&mut ui, &mut app);
     assert!(app.follows_song(), "the host draws every refresh");
@@ -527,4 +529,313 @@ fn the_browser_split_drags_and_keeps_its_share() {
         "held to v2's bound: {}",
         app.view.split
     );
+}
+
+// MARK: the transport and the Stage
+
+use kontra_ui::stage::{self, Command, Hand, Shortcut, Transport};
+
+/// A song loaded 20 s into its 120, as the host fills it.
+fn loaded() -> App {
+    let note = |start: f64, key: u8| Note {
+        start,
+        end: start + 0.5,
+        key,
+        velocity: 100,
+        voice: 0,
+    };
+    App {
+        song: Some(app::Song {
+            name: "01 Chopin - Nocturne.mid".into(),
+            position: 20.,
+            length: 120.,
+            notes: Notes::new(vec![note(19.5, 48), note(20.5, 60), note(21., 72)]),
+            transport: Transport {
+                title: "Nocturne".into(),
+                composer: Some("Chopin".into()),
+                take: 1,
+                full_screen: Some(false),
+                ..Transport::default()
+            },
+        }),
+        ..App::default()
+    }
+}
+
+fn song_mut(app: &mut App) -> &mut app::Song {
+    app.song.get_or_insert_with(app::Song::default)
+}
+
+/// What the transport asked of the host in `actions`.
+fn commands(actions: Vec<Action>) -> Vec<Command> {
+    (actions.into_iter())
+        .filter_map(|a| match a {
+            Action::Song(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+fn on_screen(ui: &Ui, id: &str) -> bool {
+    ui.scene().and_then(|s| s.surface(id)).is_some()
+}
+
+/// A frame with the pointer at `at` (Shift held if `shift`), pressed or
+/// not; its actions, and when the editor asked to be woken, if it did.
+fn point(
+    ui: &mut Ui,
+    app: &mut App,
+    at: Point,
+    pressed: bool,
+    shift: bool,
+) -> (Vec<Action>, Option<std::time::Duration>, bool) {
+    let r = app::view(ui, app);
+    let pointer = PointerInput {
+        pos: Some(at),
+        buttons: if pressed {
+            Buttons::PRIMARY
+        } else {
+            Buttons::default()
+        },
+        mods: mui::prelude::Mods {
+            shift,
+            ..Default::default()
+        },
+    };
+    let input = Input {
+        pointer,
+        ..Default::default()
+    };
+    let f = ui.frame(r.el, Some(Size::new(900., 600.)), input, 1. / 60.);
+    let (wake, moving) = f.map_or((None, false), |f| (f.repaint_after, f.animating));
+    (r.changed, wake, moving)
+}
+
+#[test]
+fn the_headers_transport_plays_pauses_seeks_and_sets_the_song() {
+    let mut ui = kontra_ui::ui();
+    let mut app = loaded();
+    settle(&mut ui, &mut app);
+    assert!(on_screen(&ui, "song") && on_screen(&ui, "song-seek"));
+    assert_eq!(
+        commands(click(&mut ui, &mut app, "song-pause")),
+        [Command::Pause]
+    );
+    song_mut(&mut app).transport.paused = true;
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        commands(click(&mut ui, &mut app, "song-pause")),
+        [Command::Play]
+    );
+    // The seek bar's middle is the song's.
+    let seek = commands(click(&mut ui, &mut app, "song-seek"));
+    assert!(
+        matches!(seek[..], [Command::Seek(t)] if (t - 60.).abs() < 2.),
+        "{seek:?}"
+    );
+    // The rest under its menu, which stays open as they are set.
+    assert!(commands(click(&mut ui, &mut app, "song-more")).is_empty());
+    assert_eq!(app.view.menu.as_deref(), Some("song-more"));
+    for (id, want) in [
+        ("song-transpose-up", vec![Command::Transpose(1)]),
+        ("song-transpose-down", vec![Command::Transpose(-1)]),
+        ("song-loop-a", vec![Command::Marks(Some(20.), None)]),
+        (
+            "song-loop-b",
+            vec![Command::Marks(None, Some(20.)), Command::Loop(true)],
+        ),
+        ("song-loop", vec![Command::Loop(true)]),
+        ("song-left", vec![Command::Hand(Hand::Left, true)]),
+        ("song-right", vec![Command::Hand(Hand::Right, true)]),
+        ("song-metronome", vec![Command::Metronome(true)]),
+        ("song-count-2", vec![Command::CountIn(2)]),
+    ] {
+        assert_eq!(commands(click(&mut ui, &mut app, id)), want, "{id}");
+        assert_eq!(app.view.menu.as_deref(), Some("song-more"), "{id}");
+    }
+    // What the host sends back shows.
+    let t = &mut song_mut(&mut app).transport;
+    (t.speed, t.transpose, t.count_in, t.metronome) = (0.5, -3, 2, true);
+    t.voices = vec!["Melody".into(), "Bass".into(), "Strings".into()];
+    settle(&mut ui, &mut app);
+    let text = |ui: &Ui, id: &str| {
+        let s = ui.scene().and_then(|s| s.surface(id));
+        s.and_then(|s| s.text_value.as_deref().map(str::to_owned))
+    };
+    assert_eq!(text(&ui, "song-speed-shown").as_deref(), Some("50%"));
+    assert_eq!(text(&ui, "song-transpose-shown").as_deref(), Some("-3"));
+    assert!(on_screen(&ui, "song-volume"), "the metronome's level");
+    // Three voices: a mute for each track instead of the hands.
+    assert!(!on_screen(&ui, "song-left"));
+    assert_eq!(
+        commands(click(&mut ui, &mut app, "song-track-2")),
+        [Command::Voice(2, true)]
+    );
+    assert_eq!(
+        commands(click(&mut ui, &mut app, "song-count-2")),
+        [Command::CountIn(0)],
+        "the count-in chosen again turns it off"
+    );
+}
+
+/// The Stage fills the window with the falling notes and the keys; F or
+/// the header opens it, F, Escape or its close button closes it.
+#[test]
+fn the_stage_fills_the_window_and_opens_and_closes_by_its_keys() {
+    let mut ui = kontra_ui::ui();
+    let mut app = App::default();
+    let mut out = Vec::new();
+    assert!(!stage::shortcut(&mut app, Shortcut::Stage, &mut out));
+    assert!(!stage::shortcut(&mut app, Shortcut::PlayPause, &mut out));
+    assert!(!app.view.stage.open, "no song, no Stage");
+    let mut app = loaded();
+    settle(&mut ui, &mut app);
+    click(&mut ui, &mut app, "song-stage");
+    assert!(app.view.stage.open);
+    settle(&mut ui, &mut app);
+    for gone in ["song", "browser", "rack", "keybed", "tab-Rack"] {
+        assert!(!on_screen(&ui, gone), "{gone} is hidden");
+    }
+    let frame_of = |ui: &Ui, id: &str| ui.scene().and_then(|s| s.surface(id)).map(|s| s.frame);
+    let bed = frame_of(&ui, "stage-keybed").unwrap();
+    let lane = frame_of(&ui, "stage-falling").unwrap();
+    assert!((bed.size.width - 900.).abs() < 0.5 && (bed.y + bed.size.height - 600.).abs() < 0.5);
+    assert!(lane.y.abs() < 0.5 && (lane.y + lane.size.height - bed.y).abs() < 0.5);
+    assert!(lane.size.height > 400., "{lane:?}");
+    assert!(app.follows_song(), "frames follow the song in the Stage");
+    // Space plays and pauses; Escape closes it.
+    assert!(stage::shortcut(&mut app, Shortcut::PlayPause, &mut out));
+    assert_eq!(commands(std::mem::take(&mut out)), [Command::Pause]);
+    assert!(stage::shortcut(&mut app, Shortcut::Leave, &mut out));
+    assert!(!app.view.stage.open && out.is_empty());
+    settle(&mut ui, &mut app);
+    assert!(on_screen(&ui, "song") && !on_screen(&ui, "stage"));
+    // F opens and closes it.
+    assert!(stage::shortcut(&mut app, Shortcut::Stage, &mut out));
+    settle(&mut ui, &mut app);
+    assert!(on_screen(&ui, "stage"));
+    assert!(stage::shortcut(&mut app, Shortcut::Stage, &mut out));
+    assert!(!app.view.stage.open);
+    assert!(!stage::shortcut(&mut app, Shortcut::Leave, &mut out));
+    // Its close button; the full screen it asked for is given back.
+    stage::shortcut(&mut app, Shortcut::Stage, &mut out);
+    settle(&mut ui, &mut app);
+    assert_eq!(
+        commands(click(&mut ui, &mut app, "stage-full")),
+        [Command::FullScreen(true)]
+    );
+    assert!(app.view.stage.full);
+    assert_eq!(
+        commands(click(&mut ui, &mut app, "stage-close")),
+        [Command::FullScreen(false)]
+    );
+    assert!(!app.view.stage.open);
+    // A song that is stopped closes it.
+    stage::shortcut(&mut app, Shortcut::Stage, &mut out);
+    app.song = None;
+    settle(&mut ui, &mut app);
+    assert!(!app.view.stage.open && !on_screen(&ui, "stage"));
+}
+
+/// The transport hides two seconds after the pointer last moved, woken by
+/// a timer rather than drawing every frame, comes back when it moves, and
+/// stays while the song is paused. The title card shows as a take starts.
+#[test]
+fn the_stages_transport_hides_while_the_pointer_rests() {
+    let mut ui = kontra_ui::ui();
+    let mut app = loaded();
+    let mut out = Vec::new();
+    stage::shortcut(&mut app, Shortcut::Stage, &mut out);
+    let here = Point::new(450., 200.);
+    let (_, wake, _) = point(&mut ui, &mut app, here, false, false);
+    for _ in 0..10 {
+        point(&mut ui, &mut app, here, false, false);
+    }
+    assert!(on_screen(&ui, "stage-bar"));
+    assert!(on_screen(&ui, "stage-card"), "a new take: its title");
+    assert!(wake.is_some(), "the editor asks to be woken: {wake:?}");
+    // Resting: the card and the transport go; then nothing more is asked.
+    let mut last = (None, true);
+    for _ in 0..(5 * 60) {
+        let (_, wake, moving) = point(&mut ui, &mut app, here, false, false);
+        last = (wake, moving);
+    }
+    assert!(!on_screen(&ui, "stage-bar") && !on_screen(&ui, "stage-card"));
+    assert_eq!(last, (None, false), "idle: no timer, no motion");
+    // A move brings it back, with a wake-up two seconds on (a tree reads
+    // the pointer the frame before it).
+    point(&mut ui, &mut app, Point::new(460., 210.), false, false);
+    let (_, wake, _) = point(&mut ui, &mut app, Point::new(460., 210.), false, false);
+    let wake = wake.map(|w| w.as_secs_f64()).unwrap_or_default();
+    assert!((1.9..=2.1).contains(&wake), "{wake}");
+    for _ in 0..5 {
+        point(&mut ui, &mut app, Point::new(460., 210.), false, false);
+    }
+    assert!(on_screen(&ui, "stage-bar"), "faded in");
+    // Paused, it stays.
+    song_mut(&mut app).transport.paused = true;
+    for _ in 0..(3 * 60) {
+        point(&mut ui, &mut app, Point::new(460., 210.), false, false);
+    }
+    assert!(on_screen(&ui, "stage-bar"));
+    // Played again from its end: a new take, the card again.
+    song_mut(&mut app).transport.take = 2;
+    for _ in 0..10 {
+        point(&mut ui, &mut app, Point::new(460., 210.), false, false);
+    }
+    assert!(on_screen(&ui, "stage-card"));
+}
+
+/// A drag along the Stage's seek bar moves the song; begun with Shift, it
+/// marks a loop over what it covered.
+#[test]
+fn a_drag_on_the_seek_bar_moves_the_song_or_marks_a_loop() {
+    let mut ui = kontra_ui::ui();
+    let mut app = loaded();
+    song_mut(&mut app).transport.paused = true;
+    let mut out = Vec::new();
+    stage::shortcut(&mut app, Shortcut::Stage, &mut out);
+    settle(&mut ui, &mut app);
+    let f = ui
+        .scene()
+        .and_then(|s| s.surface("stage-seek"))
+        .map(|s| s.frame)
+        .unwrap();
+    let at = |t: f64| Point::new(f.x + f.size.width * t, f.y + f.size.height / 2.);
+    let drag = |ui: &mut Ui, app: &mut App, shift: bool| {
+        let mut out = Vec::new();
+        for (t, pressed) in [
+            (0.25, true),
+            (0.4, true),
+            (0.6, true),
+            (0.75, true),
+            (0.75, false),
+        ] {
+            out.extend(point(ui, app, at(t), pressed, shift).0);
+        }
+        out.extend(point(ui, app, at(0.75), false, false).0);
+        commands(out)
+    };
+    let seeks = drag(&mut ui, &mut app, false);
+    let times: Vec<f64> = (seeks.iter())
+        .map(|c| match c {
+            Command::Seek(t) => *t,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert!(
+        times.len() >= 3 && times.windows(2).all(|w| w[1] > w[0]),
+        "{times:?}"
+    );
+    assert!((times[0] - 30.).abs() < 1. && (times.last().unwrap() - 90.).abs() < 1.);
+    // Again, from where the last drag left the pointer: it still takes it.
+    let again = drag(&mut ui, &mut app, false);
+    assert_eq!(again, seeks, "a second drag moves it too");
+    let looped = drag(&mut ui, &mut app, true);
+    assert!(
+        matches!(looped[..], [Command::Marks(Some(a), Some(b)), Command::Loop(true)]
+            if (a - 30.).abs() < 1. && (b - 90.).abs() < 1.),
+        "{looped:?}"
+    );
+    assert!(app.view.stage.scrub.is_none());
 }

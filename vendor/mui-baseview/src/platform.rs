@@ -92,6 +92,85 @@ pub fn reanchor_to_superview_top(handle: RawWindowHandle) {
 #[cfg(not(target_os = "macos"))]
 pub fn reanchor_to_superview_top(_handle: RawWindowHandle) {}
 
+/// KONTAKTO patch: whether the window holding the editor's view fills the
+/// screen; `None` when it cannot (it is not resizable, or forbids full
+/// screen, as a standalone whose editor cannot maximize does).
+#[cfg(target_os = "macos")]
+#[must_use]
+#[expect(unsafe_code, reason = "Objective-C messages to the host's window")]
+#[expect(
+    unexpected_cfgs,
+    reason = "objc 0.2's msg_send! tests the retired `cargo-clippy` feature"
+)]
+pub fn full_screen(handle: RawWindowHandle) -> Option<bool> {
+    use objc::{msg_send, sel, sel_impl};
+    // NSWindowStyleMaskResizable, NSWindowStyleMaskFullScreen and
+    // NSWindowCollectionBehaviorFullScreenNone.
+    const RESIZABLE: u64 = 1 << 3;
+    const FULL: u64 = 1 << 14;
+    const NONE: u64 = 1 << 9;
+    let RawWindowHandle::AppKit(h) = handle else {
+        return None;
+    };
+    // SAFETY: `ns_view` is baseview's live, non-null NSView; `window`,
+    // `collectionBehavior` and `styleMask` are plain AppKit queries on the
+    // main thread that owns it.
+    unsafe {
+        let view = h.ns_view.as_ptr().cast::<objc::runtime::Object>();
+        let window: *mut objc::runtime::Object = msg_send![view, window];
+        if window.is_null() {
+            return None;
+        }
+        let behavior: u64 = msg_send![window, collectionBehavior];
+        let mask: u64 = msg_send![window, styleMask];
+        (behavior & NONE == 0 && mask & (RESIZABLE | FULL) != 0).then_some(mask & FULL != 0)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[must_use]
+pub fn full_screen(_handle: RawWindowHandle) -> Option<bool> {
+    None
+}
+
+/// KONTAKTO patch: the window holding the editor's view fills the screen,
+/// or gives it back, as its green button does. Call only where
+/// [`full_screen`] says it can.
+#[cfg(target_os = "macos")]
+#[expect(unsafe_code, reason = "Objective-C messages to the host's window")]
+#[expect(
+    unexpected_cfgs,
+    reason = "objc 0.2's msg_send! tests the retired `cargo-clippy` feature"
+)]
+pub fn toggle_full_screen(handle: RawWindowHandle) {
+    use objc::{msg_send, sel, sel_impl};
+    // NSWindowCollectionBehaviorFullScreenPrimary and ...Auxiliary.
+    const PRIMARY: u64 = 1 << 7;
+    const AUXILIARY: u64 = 1 << 8;
+    let RawWindowHandle::AppKit(h) = handle else {
+        return;
+    };
+    // SAFETY: as in `full_screen`; `setCollectionBehavior:` and
+    // `toggleFullScreen:` (a nil sender) are AppKit actions on the main
+    // thread, which animate on their own.
+    unsafe {
+        let view = h.ns_view.as_ptr().cast::<objc::runtime::Object>();
+        let window: *mut objc::runtime::Object = msg_send![view, window];
+        if window.is_null() {
+            return;
+        }
+        let behavior: u64 = msg_send![window, collectionBehavior];
+        if behavior & (PRIMARY | AUXILIARY) == 0 {
+            let _: () = msg_send![window, setCollectionBehavior: behavior | PRIMARY];
+        }
+        let nil: *mut objc::runtime::Object = std::ptr::null_mut();
+        let _: () = msg_send![window, toggleFullScreen: nil];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn toggle_full_screen(_handle: RawWindowHandle) {}
+
 /// Whether this tick's frame should be skipped: the editor's view is
 /// detached from any window, or the host window is not visible (macOS
 /// occlusion; Windows hidden or minimized). A hidden window cannot present,

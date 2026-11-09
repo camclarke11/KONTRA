@@ -69,6 +69,7 @@ fn editor(notes: Notes) -> App {
             position: 0.,
             length: 40.,
             notes,
+            ..Default::default()
         }),
         ..App::default()
     }

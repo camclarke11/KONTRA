@@ -10,14 +10,14 @@ use super::Song;
 use super::tests::{file, track};
 use crate::{Dsp, Kontra, KontraParams, Tick};
 
-const RATE: f64 = 48_000.0;
+pub(super) const RATE: f64 = 48_000.0;
 /// Frames into the click sample its one full-scale frame lies.
-const LEAD: usize = 16;
+pub(super) const LEAD: usize = 16;
 
-struct Scratch(PathBuf);
+pub(super) struct Scratch(pub(super) PathBuf);
 
 impl Scratch {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("kontra-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
@@ -53,7 +53,7 @@ fn wav(path: &Path, samples: &[i16]) {
 /// The plugin, activated for blocks up to 4096, with part 1 a click on
 /// every key: one full-scale frame [`LEAD`] frames in, unpitched, at one
 /// level whatever the velocity.
-fn clicks(dir: &Path) -> (KontraParams, Dsp) {
+pub(super) fn clicks(dir: &Path) -> (KontraParams, Dsp) {
     let params = KontraParams::new();
     let mut dsp = Dsp::default();
     <Kontra as PluginLogic>::reset(&mut dsp, &params, &AudioConfig::new(RATE, 4096));
@@ -72,7 +72,12 @@ fn clicks(dir: &Path) -> (KontraParams, Dsp) {
 
 /// `total` frames of the first output's left side, in blocks of `sizes`
 /// in turn, as a live host asks for them.
-fn render(params: &KontraParams, dsp: &mut Dsp, sizes: &[usize], total: usize) -> Vec<f32> {
+pub(super) fn render(
+    params: &KontraParams,
+    dsp: &mut Dsp,
+    sizes: &[usize],
+    total: usize,
+) -> Vec<f32> {
     let mut out = Vec::with_capacity(total);
     let mut channels = vec![vec![0.0f32; 4096]; 2 * crate::OUTPUTS];
     let events = EventList::with_capacity(16);
@@ -94,7 +99,7 @@ fn render(params: &KontraParams, dsp: &mut Dsp, sizes: &[usize], total: usize) -
 
 /// At 90 BPM a tick of 480 to the quarter is 66.67 frames: notes one tick
 /// apart, on ticks no block size divides, in two tracks and channels.
-fn song() -> Song {
+pub(super) fn song() -> Song {
     // 666,666 µs a quarter.
     let tempo = track(&[(0, &[0xFF, 0x51, 3, 0x0A, 0x2C, 0x2A])]);
     let a = track(&[

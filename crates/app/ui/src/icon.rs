@@ -28,6 +28,12 @@ pub enum Icon {
     Output,
     /// A tuning fork.
     Tune,
+    /// A song's transport: play, pause.
+    Play,
+    Pause,
+    /// Corners pointing out: fill the screen; in: give it back.
+    Expand,
+    Contract,
 }
 
 /// `icon` in `ink`, `size` points square.
@@ -156,6 +162,27 @@ pub fn glyph(icon: Icon, size: f64, ink: Fill) -> El {
                 line(&[(6., 2.5), (6., 8.5), (10., 8.5), (10., 2.5)], false),
                 line(&[(8., 8.5), (8., 13.5)], false),
             ],
+            Icon::Play => vec![shape(&[(4.5, 3.), (13., 8.), (4.5, 13.)])],
+            Icon::Pause => vec![
+                shape(&[(4., 3.), (6.8, 3.), (6.8, 13.), (4., 13.)]),
+                shape(&[(9.2, 3.), (12., 3.), (12., 13.), (9.2, 13.)]),
+            ],
+            Icon::Expand => [
+                [(2.5, 6.), (2.5, 2.5), (6., 2.5)],
+                [(10., 2.5), (13.5, 2.5), (13.5, 6.)],
+                [(13.5, 10.), (13.5, 13.5), (10., 13.5)],
+                [(6., 13.5), (2.5, 13.5), (2.5, 10.)],
+            ]
+            .map(|c| line(&c, false))
+            .into(),
+            Icon::Contract => [
+                [(2.5, 6.), (6., 6.), (6., 2.5)],
+                [(10., 2.5), (10., 6.), (13.5, 6.)],
+                [(13.5, 10.), (10., 10.), (10., 13.5)],
+                [(6., 13.5), (6., 10.), (2.5, 10.)],
+            ]
+            .map(|c| line(&c, false))
+            .into(),
         }
     })
     .square(size)

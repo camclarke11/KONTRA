@@ -105,7 +105,9 @@ fn a_dropped_midi_file_plays_to_its_end() {
         block(&params, &mut dsp, &[]);
     }
     assert!(params.shared.song.status().is_none());
-    assert!(dsp.song.is_none());
+    // Ended, it waits at its end on the audio thread to play again.
+    assert!(dsp.song.as_ref().is_some_and(crate::song::Playing::ended));
+    assert!(params.shared.song.now().is_some_and(|n| n.ended));
 
     let junk = dir.join("junk.mid");
     std::fs::write(&junk, b"not a midi file").unwrap();
